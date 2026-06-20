@@ -1,11 +1,11 @@
-import { FireState, type WorldState } from '../core/world';
+import type { WorldState } from '../core/world';
 import type { IRenderer } from '../models/IRenderer';
-import { Fuel } from '../sim/basicFuelModel';
+import { cellRGB, type Rgb } from './palette';
 
 /**
  * 2D top-down canvas renderer (Handoff §2.2). Reads world state, writes pixels;
- * never drives the sim. Cheap elevation tint for legibility + a fire overlay.
- * No perspective camera, no 3D — top-down serves the incident-commander role.
+ * never drives the sim. No perspective camera, no 3D — top-down serves the
+ * incident-commander role. Colour decisions live in the shared palette.
  */
 export class CanvasRenderer implements IRenderer {
   private readonly ctx: CanvasRenderingContext2D;
@@ -21,53 +21,15 @@ export class CanvasRenderer implements IRenderer {
   }
 
   render(world: WorldState): void {
-    const { width, height, layers } = world;
+    const n = world.width * world.height;
     const data = this.image.data;
-    const fire = layers.fire.data;
-    const fuel = layers.fuel.data;
-    const elev = layers.elevation.data;
-
-    for (let i = 0; i < width * height; i++) {
-      let r: number;
-      let g: number;
-      let b: number;
-      const state = fire[i];
-      if (state === FireState.Burning) {
-        r = 255;
-        g = 120 + ((i * 37) % 80);
-        b = 0;
-      } else if (state === FireState.Burned) {
-        r = 30;
-        g = 26;
-        b = 24;
-      } else {
-        const shade = 0.6 + (0.4 * elev[i]) / 1000;
-        switch (fuel[i]) {
-          case Fuel.Grass:
-            r = 150 * shade;
-            g = 190 * shade;
-            b = 90 * shade;
-            break;
-          case Fuel.Brush:
-            r = 110 * shade;
-            g = 150 * shade;
-            b = 70 * shade;
-            break;
-          case Fuel.Timber:
-            r = 50 * shade;
-            g = 100 * shade;
-            b = 55 * shade;
-            break;
-          default:
-            r = 60;
-            g = 90;
-            b = 140; // water / rock
-        }
-      }
+    const rgb: Rgb = { r: 0, g: 0, b: 0 };
+    for (let i = 0; i < n; i++) {
+      cellRGB(world, i, rgb);
       const p = i * 4;
-      data[p] = r;
-      data[p + 1] = g;
-      data[p + 2] = b;
+      data[p] = rgb.r;
+      data[p + 1] = rgb.g;
+      data[p + 2] = rgb.b;
       data[p + 3] = 255;
     }
     this.ctx.putImageData(this.image, 0, 0);

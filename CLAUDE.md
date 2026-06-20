@@ -16,7 +16,12 @@ npm run dev        # Vite dev server — interactive sandbox
 npm test           # Vitest, headless (npm run test:watch for watch mode)
 npm run typecheck  # tsc --noEmit, strict
 npm run build      # typecheck + vite build
+npm run frame      # headless: run the real sim, write frame.png (smoke check)
 ```
+
+`tests/determinism.test.ts` runs the real terrain+CA pipeline and asserts a seed
+reproduces a run byte-for-byte — that is what backs the "seeded RNG everywhere"
+invariant below. Don't introduce `Math.random()`; it would break that test.
 
 Each commit should typecheck and pass tests. Conventional Commits style.
 

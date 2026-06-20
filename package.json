@@ -10,11 +10,13 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "frame": "vite-node tools/renderFrame.ts"
   },
   "devDependencies": {
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
+    "vite-node": "^6.0.0",
     "vitest": "^4.1.9"
   }
 }

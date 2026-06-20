@@ -119,3 +119,29 @@ export function ignite(world: WorldState, x: number, y: number): void {
   layers.fire.set(x, y, FireState.Burning);
   layers.burnElapsed.set(x, y, 0);
 }
+
+/**
+ * Ignite the nearest burnable cell to (cx, cy), searching outward in square
+ * rings. Keeps a demo ignition from silently landing on water/rock and looking
+ * broken. Returns true if a burnable cell was found and lit.
+ */
+export function igniteNearestBurnable(world: WorldState, cx: number, cy: number): boolean {
+  const { width, height, layers } = world;
+  const fuel = layers.fuel.data;
+  const maxR = Math.max(width, height);
+  for (let r = 0; r <= maxR; r++) {
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue; // ring perimeter only
+        const x = cx + dx;
+        const y = cy + dy;
+        if (x < 0 || y < 0 || x >= width || y >= height) continue;
+        if (fuel[y * width + x] !== Fuel.Nonburnable) {
+          ignite(world, x, y);
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}

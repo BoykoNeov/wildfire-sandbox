@@ -1,0 +1,98 @@
+/**
+ * Headless frame exporter — runs the real sim and writes a PNG using the SAME
+ * shared palette the canvas renderer uses. This executes the whole Phase 1
+ * pipeline (terrain gen -> uniform weather -> CA fire -> colour mapping) without
+ * a browser, so the output is honest evidence of what the on-screen sandbox draws.
+ *
+ * Run: npx vite-node tools/renderFrame.ts
+ */
+import { deflateSync } from 'node:zlib';
+import { writeFileSync } from 'node:fs';
+import { createWorld, type WorldState } from '../src/core/world';
+import { Simulation } from '../src/core/simulation';
+import { generateTerrain, igniteNearestBurnable } from '../src/gen/terrain';
+import { BasicFuelModel } from '../src/sim/basicFuelModel';
+import { UniformWeatherProvider } from '../src/sim/uniformWeather';
+import { CaFireModel } from '../src/sim/caFireModel';
+import { cellRGB, type Rgb } from '../src/render/palette';
+
+const CRC_TABLE: Uint32Array = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(buf: Uint8Array): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function chunk(type: string, data: Uint8Array): Buffer {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body), 0);
+  return Buffer.concat([len, body, crc]);
+}
+
+function encodePng(width: number, height: number, rgba: Uint8Array): Buffer {
+  const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // colour type: truecolour + alpha
+  const stride = width * 4;
+  const raw = Buffer.alloc((stride + 1) * height);
+  for (let y = 0; y < height; y++) {
+    raw[y * (stride + 1)] = 0; // per-scanline filter type 0 (none)
+    Buffer.from(rgba.buffer, rgba.byteOffset + y * stride, stride).copy(raw, y * (stride + 1) + 1);
+  }
+  const idat = deflateSync(raw);
+  return Buffer.concat([
+    sig,
+    chunk('IHDR', ihdr),
+    chunk('IDAT', idat),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function renderToRgba(world: WorldState): Uint8Array {
+  const n = world.width * world.height;
+  const rgba = new Uint8Array(n * 4);
+  const rgb: Rgb = { r: 0, g: 0, b: 0 };
+  for (let i = 0; i < n; i++) {
+    cellRGB(world, i, rgb);
+    const p = i * 4;
+    rgba[p] = rgb.r;
+    rgba[p + 1] = rgb.g;
+    rgba[p + 2] = rgb.b;
+    rgba[p + 3] = 255;
+  }
+  return rgba;
+}
+
+const WIDTH = 256;
+const HEIGHT = 256;
+const SEED = 1337;
+const STEPS = 120;
+
+const world = createWorld({ width: WIDTH, height: HEIGHT, seed: SEED });
+generateTerrain(world);
+igniteNearestBurnable(world, WIDTH >> 1, HEIGHT >> 1);
+
+const sim = new Simulation(world, [
+  new UniformWeatherProvider(1.5, 0.6),
+  new CaFireModel(new BasicFuelModel()),
+]);
+sim.run(STEPS, 1);
+
+const out = 'frame.png';
+writeFileSync(out, encodePng(WIDTH, HEIGHT, renderToRgba(world)));
+console.log(`wrote ${out} — ${WIDTH}x${HEIGHT}, ${STEPS} steps, seed ${SEED}`);

@@ -16,6 +16,7 @@ npm install        # one-time
 npm run dev        # interactive sandbox at http://localhost:5173
 npm test           # headless sim tests (the architecture proof lives here)
 npm run typecheck  # strict TypeScript, no emit
+npm run frame      # headless: run the real sim and write frame.png
 ```
 
 ## Architecture in one breath

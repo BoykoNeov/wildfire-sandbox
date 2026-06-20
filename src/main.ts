@@ -1,6 +1,6 @@
 import { createWorld } from './core/world';
 import { Simulation } from './core/simulation';
-import { generateTerrain, ignite } from './gen/terrain';
+import { generateTerrain, igniteNearestBurnable } from './gen/terrain';
 import { BasicFuelModel } from './sim/basicFuelModel';
 import { UniformWeatherProvider } from './sim/uniformWeather';
 import { CaFireModel } from './sim/caFireModel';
@@ -15,7 +15,8 @@ const STEPS_PER_FRAME = 1;
 // World state (plain data) + a seeded RNG from the very first frame.
 const world = createWorld({ width: WIDTH, height: HEIGHT, seed: SEED });
 generateTerrain(world);
-ignite(world, WIDTH >> 1, HEIGHT >> 1);
+// Light the nearest burnable cell to centre so the demo never lands on water/rock.
+igniteNearestBurnable(world, WIDTH >> 1, HEIGHT >> 1);
 
 // Systems talk only through the data layers, never to each other.
 const fuel = new BasicFuelModel();
