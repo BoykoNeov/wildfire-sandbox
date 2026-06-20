@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Wildfire &amp; Firefighting Sandbox</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #1a1614;
+        display: grid;
+        place-items: center;
+      }
+      #view {
+        image-rendering: pixelated;
+        width: min(90vmin, 768px);
+        height: min(90vmin, 768px);
+        box-shadow: 0 0 40px #0008;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
