@@ -12,6 +12,8 @@ for the full design and rationale (read it before reversing any decision).
 ## Quick start
 
 ```bash
+git clone git@github.com:BoykoNeov/wildfire-sandbox.git
+cd wildfire-sandbox
 npm install        # one-time
 npm run dev        # interactive sandbox at http://localhost:5173
 npm test           # headless sim tests (the architecture proof lives here)
