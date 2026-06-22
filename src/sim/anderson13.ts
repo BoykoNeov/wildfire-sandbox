@@ -11,10 +11,17 @@
  *
  * SCOPE (Phase 2): the bed is built from the DEAD size classes only, matching
  * the single-category Rothermel 1972 form in `rothermel.ts`. Live fuel loads are
- * carried in the catalogue faithfully but dropped at bed assembly, so the five
- * live-bearing models (FM2, 4, 5, 7, 10) are APPROXIMATE until the dead/live
- * two-category split lands (it needs a live moisture of extinction computed from
- * dead moisture — see the Phase-2 plan). The eight dead-only models are exact.
+ * carried in the catalogue faithfully but dropped at bed assembly, until the
+ * dead/live two-category split lands (it needs a live moisture of extinction
+ * computed from dead moisture — see the Phase-2 plan). The eight dead-only models
+ * (FM1, 3, 6, 8, 9, 11, 12, 13) are exact. Of the five live-bearing models, the
+ * drop is severe for some:
+ *   - FM5 (brush): live is ~57% of load — dead-only roughly HALVES the fuel
+ *     (materially wrong, not a minor approximation).
+ *   - FM4 (chaparral): drops ~31%, and live fuel drives chaparral behaviour.
+ *   - FM2 / FM7 / FM10: minor (~8–17% of load).
+ * Treat FM5 and FM4 as not yet trustworthy; do not surface them as usable in the
+ * step-5 fuel picker before the split lands.
  */
 import type { FuelParams, IFuelModel, RothermelFuel } from '../models/IFuelModel';
 import type { FuelBed, FuelParticle } from './rothermel';
