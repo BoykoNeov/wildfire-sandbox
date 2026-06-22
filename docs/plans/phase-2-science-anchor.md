@@ -138,8 +138,11 @@ tests/determinism.test.ts       updated per the determinism section
 
 ## Sequencing
 
-1. `rothermel.ts` + `tests/rothermel.test.ts` — the anchor, zero dependencies.
-2. Widen `FuelParams`; `anderson13.ts`.
+1. ✅ `rothermel.ts` + `tests/rothermel.test.ts` — the anchor, zero dependencies.
+   *(done — commit `ce3d2a6`; primitives cross-checked vs emxsys/behave.)*
+2. ✅ Widen `FuelParams`; `anderson13.ts` + `tests/anderson13.test.ts`.
+   *(done — all 13 models transcribed from `firelab/behave`; net-load convention
+   and 10-/100-hr SAVs source-confirmed; live fuel carried but dead-only bed.)*
 3. Moisture byte↔fraction convention.
 4. `rothermelFireModel.ts` + `spread-ros.test.ts`; wire into `main.ts`; update
    determinism test.
@@ -152,5 +155,9 @@ Each step typechecks + passes tests before the next (Conventional Commits).
 - **Editor priority** — land it last (after the science core) or in parallel?
 - **Determinism test** — switch to self-consistency, or keep a regenerated
   golden hash?
-- **Phase-2 fuel id mapping** — keep the 3 generic terrain ids mapped onto
-  Anderson models, or expand terrain generation to place all 13?
+- **Phase-2 fuel id mapping** — *partly settled in step 2:*
+  `Anderson13FuelModel.getParams` takes **native Anderson numbers 1–13** (0/unknown
+  → nonburnable), so the catalogue is self-contained. The remaining open part is
+  the terrain side: keep the 3 generic terrain ids remapped onto representative
+  Anderson numbers, or expand terrain generation to place all 13? Deferred to the
+  step-4 `main.ts` wiring.

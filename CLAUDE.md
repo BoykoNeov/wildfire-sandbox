@@ -53,7 +53,7 @@ phases are additive. Phase 1 implementations live in `src/sim/` (`CaFireModel`,
 ```
 src/core/    world state, layers, rng, clock, system, simulation (the foundation)
 src/models/  the five swappable seam interfaces + IgnitableEntity
-src/sim/     Phase 1 seam implementations (CA fire, basic fuel, uniform weather)
+src/sim/     seam implementations: P1 CA fire/basic fuel/uniform weather; P2 rothermel + anderson13
 src/gen/     terrain generation (seeded value noise)
 src/render/  canvas renderer
 src/main.ts  browser entry: wires world + systems + renderer, runs the loop
