@@ -22,9 +22,11 @@ Each must be runnable/testable before the next, per the roadmap discipline.
    `Anderson13FuelModel implements IFuelModel`. Widen `FuelParams` to carry the
    physical descriptors Rothermel needs.
 3. **Moisture semantics** — give the existing `layers.moisture` (Uint8 0–255) a
-   real meaning via a byte↔fraction convention; the model reads a moisture
-   *fraction*, the editor writes bytes. (Moisture *dynamics* — drying/wetting —
-   stay in Phase 3; Phase 2 only makes the layer physical + paintable.)
+   real meaning via a byte↔fraction convention (linear `0–255 ↔ 0.0–1.0`, a
+   **dead**-fuel moisture fraction); the model reads a moisture *fraction*, the
+   editor writes bytes. See **D6** for the encoding rationale and the moisture
+   upgrade ladder. (Moisture *dynamics* — drying/wetting — stay in Phase 3;
+   Phase 2 only makes the layer physical + paintable.)
 4. **`src/sim/rothermelFireModel.ts`** — a new `IFireModel` (CA driven by
    Rothermel ROS) swapped in behind the seam; `CaFireModel` stays as the Phase-1
    reference. Acceptance test: measured front speed on a homogeneous field
@@ -106,6 +108,58 @@ depth, moisture of extinction). Phase-1 `Fuel` ids (Grass/Brush/Timber) map onto
 representative Anderson ids (e.g. Grass→1/3, Brush→4/5/6, Timber→8/9/10) so
 existing terrain generation keeps working.
 
+### D6 — Moisture encoding + the upgrade ladder
+**Encoding (Step 3, permanent):** `layers.moisture` (Uint8) maps **linearly**:
+`fraction = byte / 255`, `byte = round(clamp(fraction, 0, 1) · 255)`. So `0` =
+bone dry, `255` = 100%. This is the one piece that is *not* cheaply reversible —
+the editor writes bytes against it and saved scenarios encode it — so keep it
+honest and linear. **Do not** bias the byte into a "realistic band" (e.g.
+0–40%) for resolution or playability: that hides a nonlinearity from every
+future reader and the editor. If generated terrain burns poorly because cells
+sit near/above their moisture of extinction, fix it by writing **lower bytes in
+`terrain.ts`** (Step 4 tuning), never by distorting the byte→fraction meaning.
+
+The convention is checked: the current generator writes `20..100` for burnable
+cells (`terrain.ts:109`), which under linear encoding is `7.8%–39%` — a
+realistic dead-fuel range that straddles typical `Mx` (0.12–0.40). Lives in
+`src/core/moisture.ts` (`byteToFraction` / `fractionToByte`).
+
+**This layer is DEAD-fuel moisture only.** 0–1.0 is ample for dead fuel (`Mx`
+tops out at 0.40). Live fuel moisture routinely runs 100–300%, so it will *not*
+fit this 0–1.0 byte — when the dead/live split lands it needs its **own**
+representation (a separate layer / encoding), not this one. Do not reuse this
+layer for live moisture.
+
+**The upgrade ladder** — what gets more elaborate later, and how expensive each
+is. The architecture is staged so these are additive, but they are *not* equally
+cheap; label honestly:
+
+1. **Single dead moisture → per-class dead moisture (1-/10-/100-hr apart)** —
+   *genuinely model-side / data-distribution only.* `rothermel.ts` already lets
+   each `FuelParticle` carry its own `moisture`; `deadFuelBed()` currently sets
+   them equal (`anderson13.ts:103`). Upgrade = change how `deadFuelBed()`
+   distributes moisture (a coarse-fuel offset from the painted fine moisture, or
+   independent per-class layers). No change to the pure Rothermel math, no
+   encoding change. Cheap, deferrable, no scheduled home needed.
+2. **Dead-only bed → dead/live two-category split** — ⚠️ *NOT "model-side only."*
+   Only the catalogue *data* is already carried (`anderson13.ts` keeps live
+   loads/SAVs faithfully). The *computation* is single-category: `rothermel.ts`
+   has one `moistureOfExtinction`, computes one characteristic moisture and one
+   `etaM` (`rothermel.ts:280-284`). The split requires extending the **pure
+   Rothermel module** to the two-category 1972 form — live moisture of extinction
+   (`Mx_live = 2.9·W·(1 − M_dead/Mx_dead) − 0.226`), separate dead/live load
+   weighting and moisture damping, **and its own published test vectors** — plus
+   a live-moisture input (its own representation, per above). This is a
+   substantial step **comparable in size to Step 4**, not a fractional increment.
+   It is **unblocked by Step 3** (its precondition — a physical moisture layer —
+   is exactly Step 3) and can land any time after; it does **not** gate a
+   runnable Rothermel fire model (Step 4 runs fine dead-only). **FM4/FM5 stay out
+   of the Step-5 fuel picker until this lands** (dead-only halves FM5, drops FM4
+   ~31% — see `anderson13.ts` header).
+3. **Static moisture → drying/wetting dynamics** — Phase 3, additive. A new
+   system *writes* the byte layer over time from weather; the Step-3 encoding is
+   read unchanged. See `docs/plans/phase-3-moisture-dynamics.md`.
+
 ## Determinism (the hard constraint)
 
 `tests/determinism.test.ts` asserts a seed reproduces a run byte-for-byte; no
@@ -143,10 +197,24 @@ tests/determinism.test.ts       updated per the determinism section
 2. ✅ Widen `FuelParams`; `anderson13.ts` + `tests/anderson13.test.ts`.
    *(done — all 13 models transcribed from `firelab/behave`; net-load convention
    and 10-/100-hr SAVs source-confirmed; live fuel carried but dead-only bed.)*
-3. Moisture byte↔fraction convention.
+3. Moisture byte↔fraction convention (D6): `src/core/moisture.ts`
+   (`byteToFraction`/`fractionToByte`, linear) + `tests/moisture.test.ts`;
+   document `layers.moisture` as **dead**-fuel moisture. The bed keeps a single
+   dead moisture (no change to `deadFuelBed`'s shape).
 4. `rothermelFireModel.ts` + `spread-ros.test.ts`; wire into `main.ts`; update
-   determinism test.
+   determinism test. (Runs dead-only — the dead/live split is not a prerequisite.)
 5. Terrain editor (independent — can run in parallel with 1–4 or land last).
+
+**Out-of-band — Dead/live two-category split (unblocked by Step 3).** *Not*
+numbered into the 1→5 flow because it is independent of Step 4/5 ordering: its
+only precondition is the physical moisture layer (Step 3). Substantial — extend
+the pure `rothermel.ts` to the two-category 1972 form + a live-moisture
+representation + its own test vectors (D6 item 2), then ungate FM4/FM5 in the
+picker. Comparable in size to Step 4; land any time after Step 3.
+
+**Deferred, no home needed — per-class dead moisture** (1-/10-/100-hr apart): a
+cheap model-side tweak to `deadFuelBed()` distribution whenever wanted (D6
+item 1). Not on the critical path.
 
 Each step typechecks + passes tests before the next (Conventional Commits).
 
