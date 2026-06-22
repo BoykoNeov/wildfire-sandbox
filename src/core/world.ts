@@ -12,7 +12,11 @@ export interface Layers {
   elevation: Layer<Float32Array>;
   /** Fuel-type id -> IFuelModel params. 0 = nonburnable. */
   fuel: Layer<Uint8Array>;
-  /** Fuel moisture, 0..255 (0 = bone dry, 255 = saturated). */
+  /**
+   * Dead-fuel moisture, 0..255 (0 = bone dry, 255 = 100%). Linear byte↔fraction
+   * via `core/moisture.ts`; the fire model reads a fraction, the editor writes
+   * bytes. Live-fuel moisture is a separate concern (see Phase-2 plan D6).
+   */
   moisture: Layer<Uint8Array>;
   /** Canopy bulk-density proxy, 0..255 — for crown-fire coupling (Handoff §2.1). */
   canopy: Layer<Uint8Array>;
