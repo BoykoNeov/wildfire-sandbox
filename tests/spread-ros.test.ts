@@ -3,6 +3,7 @@ import { createWorld, FireState, type WorldState } from '../src/core/world';
 import { Simulation } from '../src/core/simulation';
 import { Anderson13FuelModel, ANDERSON_13, deadFuelBed } from '../src/sim/anderson13';
 import { RothermelFireModel } from '../src/sim/rothermelFireModel';
+import { UniformWeatherProvider } from '../src/sim/uniformWeather';
 import { surfaceSpread, ftPerMinToMetersPerSec } from '../src/sim/rothermel';
 import { byteToFraction } from '../src/core/moisture';
 
@@ -78,6 +79,36 @@ describe('Rothermel fire model — front speed equals analytic ROS', () => {
     // stalled front (ratio → 0).
     expect(ratio).toBeGreaterThan(0.93);
     expect(ratio).toBeLessThanOrEqual(1.02);
+  });
+
+  it('wind biases the front downwind (φw direction projection)', () => {
+    // Same dry homogeneous field, but wind blows toward +x. The downwind front
+    // should outrun the crosswind front, which advances at the no-wind baseline.
+    const cellSize = 40 * analyticR0Mps(); // crosswind ≈ 1 cell / 40 ticks
+    const w = 81;
+    const h = 81;
+    const cx = w >> 1;
+    const cy = h >> 1;
+    const world = createWorld({ width: w, height: h, seed: 1, cellSize });
+    world.layers.fuel.data.fill(FM);
+    world.layers.moisture.data.fill(MOIST_BYTE);
+    world.layers.fire.set(cx, cy, FireState.Burning);
+
+    new Simulation(world, [
+      new UniformWeatherProvider(3, 0), // ≈ 3 m/s midflame toward +x
+      new RothermelFireModel(new Anderson13FuelModel()),
+    ]).run(400, 1);
+
+    const ignited = (x: number, y: number): boolean =>
+      world.layers.fire.get(x, y) !== FireState.Unburned;
+
+    let downwind = 0;
+    for (let x = cx + 1; x < w && ignited(x, cy); x++) downwind = x - cx;
+    let crosswind = 0;
+    for (let y = cy + 1; y < h && ignited(cx, y); y++) crosswind = y - cy;
+
+    expect(crosswind).toBeGreaterThan(0); // crosswind still carries at baseline R0
+    expect(downwind).toBeGreaterThan(crosswind); // …but wind drives it much further
   });
 
   it('does not spread when moisture is at/above the moisture of extinction', () => {

@@ -10,7 +10,11 @@ export class UniformWeatherProvider implements IWeatherProvider {
   readonly name = 'weather:uniform';
 
   constructor(
-    /** Wind vector in cells/second, pointing the way the wind blows. */
+    /**
+     * Wind vector pointing the way the wind blows. The Rothermel fire model reads
+     * the components as midflame wind in m/s (plan §D3); the legacy CA reads them
+     * as a dimensionless down-wind alignment strength. See `world.ts` `windU/windV`.
+     */
     public u: number,
     public v: number,
   ) {}

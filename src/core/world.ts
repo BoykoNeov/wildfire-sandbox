@@ -24,7 +24,12 @@ export interface Layers {
   fire: Layer<Uint8Array>;
   /** Seconds a cell has been burning — drives burnout. */
   burnElapsed: Layer<Float32Array>;
-  /** Wind field, written by IWeatherProvider, read by IFireModel (cells/sec). */
+  /**
+   * Wind field, written by IWeatherProvider, read by IFireModel. A vector pointing
+   * the way the wind blows; the Rothermel fire model reads its components as
+   * **midflame wind in m/s** (plan §D3). (The legacy Phase-1 `CaFireModel` instead
+   * treats them as a dimensionless down-wind alignment strength.)
+   */
   windU: Layer<Float32Array>;
   windV: Layer<Float32Array>;
 }
