@@ -242,6 +242,11 @@ export function ftPerMinToMetersPerSec(ftPerMin: number): number {
   return (ftPerMin * 0.3048) / 60;
 }
 
+/** m/s → ft/min (the unit the wind factor wants): ×60/0.3048. */
+export function metersPerSecToFtPerMin(metersPerSec: number): number {
+  return (metersPerSec * 60) / 0.3048;
+}
+
 // ───────────────────────── the assembled model ─────────────────────────
 
 /**

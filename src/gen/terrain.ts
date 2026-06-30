@@ -106,7 +106,11 @@ export function generateTerrain(world: WorldState, opts: TerrainOptions = {}): v
         else if (band < 0.75) fuel[i] = Fuel.Brush;
         else fuel[i] = Fuel.Timber;
         canopy[i] = fuel[i] === Fuel.Timber ? 200 : fuel[i] === Fuel.Brush ? 90 : 10;
-        moist[i] = Math.round(20 + moistNoise.sample(u, v) * 80); // 20..100, fairly dry
+        // Dead-fuel moisture byte (linear 0..255 ↔ 0..1, see core/moisture.ts).
+        // 6..52 ≈ 2.4%–20%: a dry range that mostly sits below the Anderson Mx
+        // (FM1 0.12 / FM2 0.15 / FM3 0.25) so the Rothermel front can carry. This
+        // is the §D6 lever — tune the *bytes* here, never the byte↔fraction meaning.
+        moist[i] = Math.round(6 + moistNoise.sample(u, v) * 46); // 6..52
       }
     }
   }

@@ -1,8 +1,8 @@
 /**
  * Headless frame exporter — runs the real sim and writes a PNG using the SAME
- * shared palette the canvas renderer uses. This executes the whole Phase 1
- * pipeline (terrain gen -> uniform weather -> CA fire -> colour mapping) without
- * a browser, so the output is honest evidence of what the on-screen sandbox draws.
+ * shared palette the canvas renderer uses. This mirrors `main.ts`'s pipeline
+ * (terrain gen -> uniform weather -> Rothermel ROS fire -> colour mapping)
+ * without a browser, so the output is honest evidence of what the sandbox draws.
  *
  * Run: npx vite-node tools/renderFrame.ts
  */
@@ -11,9 +11,9 @@ import { writeFileSync } from 'node:fs';
 import { createWorld, type WorldState } from '../src/core/world';
 import { Simulation } from '../src/core/simulation';
 import { generateTerrain, igniteNearestBurnable } from '../src/gen/terrain';
-import { BasicFuelModel } from '../src/sim/basicFuelModel';
+import { Anderson13FuelModel } from '../src/sim/anderson13';
 import { UniformWeatherProvider } from '../src/sim/uniformWeather';
-import { CaFireModel } from '../src/sim/caFireModel';
+import { RothermelFireModel } from '../src/sim/rothermelFireModel';
 import { cellRGB, type Rgb } from '../src/render/palette';
 
 const CRC_TABLE: Uint32Array = (() => {
@@ -81,7 +81,9 @@ function renderToRgba(world: WorldState): Uint8Array {
 const WIDTH = 256;
 const HEIGHT = 256;
 const SEED = 1337;
-const STEPS = 120;
+// Rothermel ROS on 30 m cells is metres/min, so a visible burn scar needs far
+// more sim-seconds than the Phase-1 CA did.
+const STEPS = 2000;
 
 const world = createWorld({ width: WIDTH, height: HEIGHT, seed: SEED });
 generateTerrain(world);
@@ -89,7 +91,7 @@ igniteNearestBurnable(world, WIDTH >> 1, HEIGHT >> 1);
 
 const sim = new Simulation(world, [
   new UniformWeatherProvider(1.5, 0.6),
-  new CaFireModel(new BasicFuelModel()),
+  new RothermelFireModel(new Anderson13FuelModel()),
 ]);
 sim.run(STEPS, 1);
 

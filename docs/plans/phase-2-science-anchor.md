@@ -85,10 +85,10 @@ Phase 1 ignites neighbors *probabilistically*. For Phase 2 the front speed must
 *be* the Rothermel ROS, so use a **deterministic spread-progress accumulator**:
 
 - Add a per-cell `Float32` progress layer (or reuse a scratch buffer).
-- Each tick, for each unburned cell, sum contributions from burning neighbors:
-  `progress[i] += Σ (ROS_dir / (dist · cellSize)) · dt`, where `ROS_dir` is the
-  Rothermel ROS evaluated for cell `i`'s fuel/moisture with wind+slope projected
-  onto the neighbor→cell direction.
+- Each tick, for each unburned cell, accumulate from ignited neighbors:
+  `progress[i] += max over ignited neighbors of (ROS_dir / (dist · cellSize)) · dt`,
+  where `ROS_dir` is the Rothermel ROS evaluated for cell `i`'s fuel/moisture with
+  wind+slope projected onto the neighbor→cell direction.
 - When `progress[i] ≥ 1`, the cell ignites. Burnout uses fuel residence time
   (derived from `σ`, Anderson/Albini) instead of the hand-tuned `burnDuration`.
 
@@ -100,6 +100,31 @@ return later as a small modulation; it is **not** Phase 2.
 > Alternative considered: keep the probabilistic CA and just feed `ROS` into the
 > ignition probability. Rejected as the primary because front speed would no
 > longer equal ROS, killing the clean science-check acceptance test.
+
+#### D4 amendment (settled during step-4 implementation, commit `<this>`)
+The first sketch above summed over *burning* neighbors. Implementation surfaced
+two flaws; both are fixed by the wording now shown above. Recorded here so the
+change is not a silent reversal:
+
+1. **`max`, not `Σ`.** Summing overspeeds a planar front by `1+√2 ≈ 2.41×` (one
+   cardinal + two diagonal sources), so measured speed ≠ ROS and the acceptance
+   gate fails. The front physically arrives from the *fastest* direction (a
+   min-arrival-time process); `max` is the forward-Euler discretization of exactly
+   that, so it *serves* D4's goal rather than reversing it. Verified: `max` yields
+   R0 along every neighbour ray (cardinal *and* diagonal — `dist` is in the
+   denominator), ~8% slow only between rays.
+2. **Sources = *ignited* (Burning OR Burned), not Burning only.** Flame residence
+   `τ = 384/σ` is ~7 s for grass, but one 30 m cell takes ~20 min to cross at a
+   realistic no-wind ROS (`R0(FM1, 6%) ≈ 0.024 m/s`). Burning-only sources make
+   the front stall and die the instant a source burns out. A cell that has *ever*
+   ignited keeps pushing the front (the arrival-time view); burnout then becomes
+   purely the cosmetic flame duration, decoupled from spread.
+
+Acceptance test (`tests/spread-ros.test.ts`): a **planar cardinal front** (not a
+radius — `max` is octagonal between rays) over ~30 cells with crossing-time ≫ dt,
+measured against `surfaceSpread`'s own R0; lands at ratio ≈ 0.97 (±5%, the ±1-cell
+counting floor). Also asserts no spread at/above `Mx`, and Rothermel-path
+determinism. Wind is read as **midflame m/s** (D3); slope clamped ≥ 0 (upslope-only).
 
 ### D5 — Anderson 13 catalog
 Standard 13 models (Anderson 1982 — grass 1–3, shrub 4–7, timber 8–10, slash
@@ -201,8 +226,11 @@ tests/determinism.test.ts       updated per the determinism section
    (`byteToFraction`/`fractionToByte`, linear) + `tests/moisture.test.ts`;
    document `layers.moisture` as **dead**-fuel moisture. The bed keeps a single
    dead moisture (no change to `deadFuelBed`'s shape).
-4. `rothermelFireModel.ts` + `spread-ros.test.ts`; wire into `main.ts`; update
-   determinism test. (Runs dead-only — the dead/live split is not a prerequisite.)
+4. ✅ `rothermelFireModel.ts` + `spread-ros.test.ts`; wired into `main.ts` (+ the
+   `renderFrame` smoke tool). *(done — `max`/ignited-source ROS-accumulation CA;
+   front speed matches analytic R0 within ~5%; Rothermel-path determinism added;
+   terrain moisture lowered to 6..52 per §D6 so the front carries. See the D4
+   amendment above. Runs dead-only — the dead/live split is not a prerequisite.)*
 5. Terrain editor (independent — can run in parallel with 1–4 or land last).
 
 **Out-of-band — Dead/live two-category split (unblocked by Step 3).** *Not*
