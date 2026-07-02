@@ -144,10 +144,12 @@ future reader and the editor. If generated terrain burns poorly because cells
 sit near/above their moisture of extinction, fix it by writing **lower bytes in
 `terrain.ts`** (Step 4 tuning), never by distorting the byte→fraction meaning.
 
-The convention is checked: the current generator writes `20..100` for burnable
-cells (`terrain.ts:109`), which under linear encoding is `7.8%–39%` — a
-realistic dead-fuel range that straddles typical `Mx` (0.12–0.40). Lives in
-`src/core/moisture.ts` (`byteToFraction` / `fractionToByte`).
+The convention is checked: the current generator writes `6..52` for burnable
+cells (`terrain.ts:113`), which under linear encoding is `2.4%–20%` — a dry
+dead-fuel range that mostly sits *below* typical `Mx` (0.12–0.40) so the
+Rothermel front can carry (this is the Step-4 moisture tuning, see the D6 lever
+note above). Lives in `src/core/moisture.ts` (`byteToFraction` /
+`fractionToByte`).
 
 **This layer is DEAD-fuel moisture only.** 0–1.0 is ample for dead fuel (`Mx`
 tops out at 0.40). Live fuel moisture routinely runs 100–300%, so it will *not*
@@ -222,10 +224,10 @@ tests/determinism.test.ts       updated per the determinism section
 2. ✅ Widen `FuelParams`; `anderson13.ts` + `tests/anderson13.test.ts`.
    *(done — all 13 models transcribed from `firelab/behave`; net-load convention
    and 10-/100-hr SAVs source-confirmed; live fuel carried but dead-only bed.)*
-3. Moisture byte↔fraction convention (D6): `src/core/moisture.ts`
+3. ✅ Moisture byte↔fraction convention (D6): `src/core/moisture.ts`
    (`byteToFraction`/`fractionToByte`, linear) + `tests/moisture.test.ts`;
    document `layers.moisture` as **dead**-fuel moisture. The bed keeps a single
-   dead moisture (no change to `deadFuelBed`'s shape).
+   dead moisture (no change to `deadFuelBed`'s shape). *(done — commit `c67e093`.)*
 4. ✅ `rothermelFireModel.ts` + `spread-ros.test.ts`; wired into `main.ts` (+ the
    `renderFrame` smoke tool). *(done — `max`/ignited-source ROS-accumulation CA;
    front speed matches analytic R0 within ~5%; Rothermel-path determinism added;
