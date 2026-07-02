@@ -111,6 +111,32 @@ describe('Rothermel fire model — front speed equals analytic ROS', () => {
     expect(downwind).toBeGreaterThan(crosswind); // …but wind drives it much further
   });
 
+  it('a front runs faster uphill than on flat ground (φs slope factor)', () => {
+    // Same planar +x front, twice: flat, then over ground that rises toward +x so
+    // the front climbs upslope. Rothermel's slope factor is upslope-only, so the
+    // climbing front must outrun the flat one. This exercises slope at the CA
+    // integration level (the pure module tests φs directly).
+    const R0 = analyticR0Mps();
+    const dt = 1;
+    const TICKS_PER_CELL = 40;
+    const cellSize = TICKS_PER_CELL * dt * R0;
+    const STEPS = 600; // flat front ≈ 15 cells — well short of the wall
+    const width = 60;
+    const height = 5;
+
+    const flat = planarFrontWorld(cellSize, width, height);
+    new Simulation(flat, [new RothermelFireModel(new Anderson13FuelModel())]).run(STEPS, dt);
+
+    const sloped = planarFrontWorld(cellSize, width, height);
+    const elev = sloped.layers.elevation.data;
+    const risePerCell = 0.5 * cellSize; // tan φ = 0.5 along +x (a ~27° upslope)
+    for (let y = 0; y < height; y++)
+      for (let x = 0; x < width; x++) elev[y * width + x] = x * risePerCell;
+    new Simulation(sloped, [new RothermelFireModel(new Anderson13FuelModel())]).run(STEPS, dt);
+
+    expect(frontColumn(sloped)).toBeGreaterThan(frontColumn(flat));
+  });
+
   it('does not spread when moisture is at/above the moisture of extinction', () => {
     // 60% dead-fuel moisture ≫ FM1 Mx (0.12) → η_M = 0 → R0 = 0 → front stays put.
     const world = createWorld({ width: 16, height: 5, seed: 1, cellSize: 30 });
