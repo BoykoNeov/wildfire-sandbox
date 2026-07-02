@@ -37,3 +37,9 @@ under rain/high humidity — instead of being a static painted field.
   seasonal curve. See `phase-2-science-anchor.md` D6.
 - **Spotting / rain** are the other Phase-3 pieces; moisture dynamics is the
   smallest of the three and a clean place to start.
+- **Wind-sampling convention — pick one when spatial wind lands.** The two fire
+  models currently read wind from different cells: `RothermelFireModel` samples
+  the *destination* cell (`rothermelFireModel.ts`), `CaFireModel` samples the
+  *source* neighbour (`caFireModel.ts`). This is moot under today's uniform wind
+  but diverges once time-varying / spatially-varying wind arrives — settle a
+  single convention then so the two models agree.
