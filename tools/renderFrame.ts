@@ -11,7 +11,7 @@ import { writeFileSync } from 'node:fs';
 import { createWorld, type WorldState } from '../src/core/world';
 import { Simulation } from '../src/core/simulation';
 import { generateTerrain, igniteNearestBurnable } from '../src/gen/terrain';
-import { Anderson13FuelModel } from '../src/sim/anderson13';
+import { TerrainFuelModel } from '../src/sim/terrainFuelModel';
 import { UniformWeatherProvider } from '../src/sim/uniformWeather';
 import { RothermelFireModel } from '../src/sim/rothermelFireModel';
 import { cellRGB, type Rgb } from '../src/render/palette';
@@ -91,7 +91,7 @@ igniteNearestBurnable(world, WIDTH >> 1, HEIGHT >> 1);
 
 const sim = new Simulation(world, [
   new UniformWeatherProvider(1.5, 0.6),
-  new RothermelFireModel(new Anderson13FuelModel()),
+  new RothermelFireModel(new TerrainFuelModel()),
 ]);
 sim.run(STEPS, 1);
 
