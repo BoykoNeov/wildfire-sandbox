@@ -131,26 +131,39 @@ const NONBURNABLE: FuelParams = { burnable: false, spreadRate: 0, burnDuration: 
  * the Phase-1 CA.
  */
 export class Anderson13FuelModel implements IFuelModel {
+  // `FuelParams` are immutable data, so build one object per model number and
+  // hand back the same reference on every call. The Rothermel fire model calls
+  // `getParams` for every non-burned cell each tick (~millions/sec on a full
+  // grid); without this cache each call allocated a fresh nested object, pure GC
+  // churn against the per-cell performance invariant. Indexed by fuel id (0–13),
+  // not a Map, to keep the hot-loop lookup a plain array read.
+  private readonly cache: FuelParams[] = [];
+
   getParams(fuelType: number): FuelParams {
+    const cached = this.cache[fuelType];
+    if (cached) return cached;
     const m = ANDERSON_13.get(fuelType);
-    if (!m) return NONBURNABLE;
-    return {
-      burnable: true,
-      spreadRate: 0,
-      burnDuration: 0,
-      rothermel: {
-        dead1hLoad: m.dead1hLoad,
-        dead10hLoad: m.dead10hLoad,
-        dead100hLoad: m.dead100hLoad,
-        liveHerbLoad: m.liveHerbLoad,
-        liveWoodyLoad: m.liveWoodyLoad,
-        dead1hSav: m.dead1hSav,
-        liveHerbSav: m.liveHerbSav,
-        liveWoodySav: m.liveWoodySav,
-        depth: m.depth,
-        deadMx: m.deadMx,
-        heatContent: m.heatContent,
-      },
-    };
+    const params: FuelParams = m
+      ? {
+          burnable: true,
+          spreadRate: 0,
+          burnDuration: 0,
+          rothermel: {
+            dead1hLoad: m.dead1hLoad,
+            dead10hLoad: m.dead10hLoad,
+            dead100hLoad: m.dead100hLoad,
+            liveHerbLoad: m.liveHerbLoad,
+            liveWoodyLoad: m.liveWoodyLoad,
+            dead1hSav: m.dead1hSav,
+            liveHerbSav: m.liveHerbSav,
+            liveWoodySav: m.liveWoodySav,
+            depth: m.depth,
+            deadMx: m.deadMx,
+            heatContent: m.heatContent,
+          },
+        }
+      : NONBURNABLE;
+    this.cache[fuelType] = params;
+    return params;
   }
 }

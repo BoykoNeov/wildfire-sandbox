@@ -64,6 +64,10 @@ export class RothermelFireModel implements IFireModel {
   readonly name = 'fire:rothermel';
   private next: Uint8Array | null = null;
   private progress: Float32Array | null = null;
+  // Flame residence time depends only on the fuel's dead bed SAV, so it is the
+  // same for every cell of a given fuel id. Cache it per id instead of rebuilding
+  // a fuel bed (an allocation) for every burning cell every tick.
+  private readonly residenceSecById = new Map<number, number>();
 
   constructor(private readonly fuel: IFuelModel) {}
 
@@ -99,7 +103,11 @@ export class RothermelFireModel implements IFireModel {
           // Burnout is cosmetic flame duration (Albini residence time τ = 384/σ),
           // independent of spread. No rothermel descriptor ⇒ can't sustain ⇒ out.
           burnElapsed[i] += dt;
-          const residenceSec = rf ? flameResidenceTime(bedSAV(rf)) * 60 : 0;
+          let residenceSec = this.residenceSecById.get(fuelL[i]);
+          if (residenceSec === undefined) {
+            residenceSec = rf ? flameResidenceTime(bedSAV(rf)) * 60 : 0;
+            this.residenceSecById.set(fuelL[i], residenceSec);
+          }
           if (burnElapsed[i] >= residenceSec) next[i] = FireState.Burned;
           continue;
         }
