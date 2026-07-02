@@ -33,3 +33,9 @@ npm run frame      # headless: run the real sim and write frame.png
 Phase 1 (this scaffold) — core CA spread + all seams stubbed. → Phase 2 science
 anchor (Anderson 13 + Rothermel) → Phase 3 dynamic world → Phase 4 firefighting
 → Phase 5 polish. Structures/WUI and industrial fires are additive later phases.
+
+## License
+
+Boyko Non-Commercial License v1.0 (BNCL-1.0) — non-commercial use only; see
+[`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE). Commercial licenses are
+available separately from the copyright holder.

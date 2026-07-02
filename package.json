@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "2D top-down, science-grounded wildfire & firefighting sandbox.",
+  "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
