@@ -23,7 +23,7 @@ import { GroundCrew } from '../src/sim/groundCrew';
 import { Engine } from '../src/sim/engine';
 import { Aircraft } from '../src/sim/aircraft';
 import { RetardantSystem } from '../src/sim/retardantSystem';
-import { cellRGB, type Rgb } from '../src/render/palette';
+import { renderRGBA } from '../src/render/palette';
 
 const CRC_TABLE: Uint32Array = (() => {
   const t = new Uint32Array(256);
@@ -73,17 +73,8 @@ function encodePng(width: number, height: number, rgba: Uint8Array): Buffer {
 }
 
 function renderToRgba(world: WorldState): Uint8Array {
-  const n = world.width * world.height;
-  const rgba = new Uint8Array(n * 4);
-  const rgb: Rgb = { r: 0, g: 0, b: 0 };
-  for (let i = 0; i < n; i++) {
-    cellRGB(world, i, rgb);
-    const p = i * 4;
-    rgba[p] = rgb.r;
-    rgba[p + 1] = rgb.g;
-    rgba[p + 2] = rgb.b;
-    rgba[p + 3] = 255;
-  }
+  const rgba = new Uint8Array(world.width * world.height * 4);
+  renderRGBA(world, rgba); // shared composition: per-cell colours + fire glow
   return rgba;
 }
 

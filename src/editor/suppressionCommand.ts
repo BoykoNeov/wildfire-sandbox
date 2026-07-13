@@ -217,9 +217,10 @@ export class SuppressionCommand {
       padding: '10px 12px',
       font: '12px system-ui, sans-serif',
       color: '#e8e2dc',
-      background: '#221a2ae6',
-      border: '1px solid #46385a',
+      background: '#2a2320e6',
+      border: '1px solid #4a3f38',
       borderRadius: '8px',
+      boxShadow: '0 4px 18px #0007',
       display: 'flex',
       flexDirection: 'column',
       gap: '8px',
@@ -230,7 +231,7 @@ export class SuppressionCommand {
 
     const title = document.createElement('div');
     title.textContent = 'Fire command';
-    Object.assign(title.style, { fontWeight: '600', color: '#c9b8ff' });
+    Object.assign(title.style, { fontWeight: '600', color: '#f0a35e', letterSpacing: '0.03em' });
     panel.appendChild(title);
 
     const row = document.createElement('div');
@@ -239,11 +240,11 @@ export class SuppressionCommand {
       const btn = document.createElement('button');
       btn.textContent = t.label;
       Object.assign(btn.style, buttonStyle);
-      if (t.id === this.tool) btn.style.background = '#7a4dd6';
+      if (t.id === this.tool) btn.style.background = ACCENT;
       btn.addEventListener('click', () => {
         this.tool = t.id;
         for (const child of Array.from(row.children)) {
-          (child as HTMLElement).style.background = child === btn ? '#7a4dd6' : '#3a2f48';
+          (child as HTMLElement).style.background = child === btn ? ACCENT : '#3a322c';
         }
       });
       row.appendChild(btn);
@@ -272,12 +273,15 @@ export class SuppressionCommand {
   }
 }
 
+/** Armed-tool accent: ember red — the panel commands fire, the editor's is earth-orange. */
+const ACCENT = '#c0392b';
+
 const buttonStyle: Partial<CSSStyleDeclaration> = {
   padding: '4px 8px',
   font: 'inherit',
   color: '#e8e2dc',
-  background: '#3a2f48',
-  border: '1px solid #46385a',
+  background: '#3a322c',
+  border: '1px solid #4a3f38',
   borderRadius: '4px',
   cursor: 'pointer',
 };

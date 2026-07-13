@@ -8,21 +8,70 @@
       html,
       body {
         margin: 0;
-        height: 100%;
-        background: #1a1614;
+        min-height: 100%;
+        background: radial-gradient(120vmax 120vmax at 50% -20%, #241c17 0%, #17120f 60%);
+        color: #e8e2dc;
+        font: 13px/1.45 system-ui, sans-serif;
+      }
+      body {
         display: grid;
         place-items: center;
+        grid-template-rows: auto auto auto;
+        row-gap: 10px;
+        padding: 18px 0 14px;
+        box-sizing: border-box;
+        min-height: 100vh;
+      }
+      header {
+        text-align: center;
+        user-select: none;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 650;
+        letter-spacing: 0.04em;
+        color: #f3c98a;
+      }
+      header p {
+        margin: 2px 0 0;
+        font-size: 11.5px;
+        color: #a99e94;
       }
       #view {
         image-rendering: pixelated;
-        width: min(90vmin, 768px);
-        height: min(90vmin, 768px);
-        box-shadow: 0 0 40px #0008;
+        width: min(86vmin, 768px);
+        height: min(86vmin, 768px);
+        border: 1px solid #4a3f38;
+        border-radius: 6px;
+        box-shadow:
+          0 0 0 4px #1f1915,
+          0 10px 50px #000a;
+        cursor: crosshair;
+      }
+      footer {
+        font-size: 11.5px;
+        color: #8d8378;
+        user-select: none;
+        text-align: center;
+      }
+      footer kbd {
+        font: inherit;
+        color: #cfc4b8;
       }
     </style>
   </head>
   <body>
+    <header>
+      <h1>WILDFIRE &amp; FIREFIGHTING SANDBOX</h1>
+      <p>a science-grounded incident-commander sandbox — authentic behavior, not a predictive tool</p>
+    </header>
     <canvas id="view"></canvas>
+    <footer>
+      <kbd>Terrain</kbd> panel paints the landscape (pause to author) &nbsp;·&nbsp;
+      <kbd>Fire command</kbd> panel arms crew / engine / air-tanker orders &nbsp;·&nbsp;
+      the smoldering scar edge is live — deny it fuel
+    </footer>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
