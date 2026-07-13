@@ -14,17 +14,19 @@ import { Anderson13FuelModel } from './anderson13';
  * `BasicFuelModel` path, and the determinism test are all untouched — only the
  * Rothermel fuel lookup is remapped.
  *
- * Choices — dead-only-exact models only. The single-category (dead-only) bed
- * halves FM5 and drops FM4 ~31% (see the `anderson13.ts` header), so the
- * live-bearing shrub models stay out until the dead/live split lands (Phase-2
- * plan §D6). Do not "fix" Brush back to FM4/FM5 before then.
+ * Choices. The dead/live two-category split has landed, so FM4/FM5 are now
+ * available; the current mapping still uses the litter/slash models because they
+ * give a clean grass > brush > timber spread ordering for the generic terrain:
  *   Grass  → FM1 (short grass):          fast, low Mx=0.12 (drops out when damp).
- *   Brush  → FM6 (dormant brush/slash):  dead-only-exact, carries across the map's
- *            moisture band (Mx=0.25); NOT FM4/FM5, which need live fuel.
+ *   Brush  → FM6 (dormant brush/slash):  carries at a moderate rate across the
+ *            map's moisture band (Mx=0.25), between grass and timber.
  *   Timber → FM9 (long-needle/hardwood litter): slow surface spread, so timber
  *            reads as clearly slower than grass — the honest "surface fire under
  *            timber is slow" lesson. FM8 (compact litter) is so slow its front is
  *            ~1 cell over a whole demo and reads as static, so FM9 is the pick.
+ * Follow-on demo tuning (deferred): remapping Brush → FM4 (chaparral) or FM5
+ * (brush) now works and would give a livelier, live-fuel-driven brush; left out
+ * here so this change stays a pure model/doc update, not a demo behaviour change.
  * Nonburnable (water/rock) and any unknown id fall through to nonburnable.
  */
 export const TERRAIN_TO_ANDERSON: ReadonlyMap<number, number> = new Map([

@@ -12,9 +12,10 @@
  *
  * SCOPE: this layer is **dead**-fuel moisture. 0..1.0 is ample for dead fuel
  * (moisture of extinction tops out ~0.40). Live fuel moisture runs 100–300% and
- * will get its own representation when the dead/live split lands — do not push
- * live moisture through these helpers. See `docs/plans/phase-2-science-anchor.md`
- * D6 and `docs/plans/phase-3-moisture-dynamics.md`.
+ * has its own representation now that the dead/live split has landed — a
+ * scenario-level scalar on `RothermelFireModel`, not this layer. Do not push live
+ * moisture through these helpers. See `docs/plans/phase-2-science-anchor.md` D6
+ * and `docs/plans/phase-3-moisture-dynamics.md`.
  */
 
 /** Maximum moisture byte — the fully-saturated (100%) end of the 0..255 range. */

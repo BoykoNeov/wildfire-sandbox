@@ -9,19 +9,23 @@
  * conversion. The 10-hr (109) and 100-hr (30) dead SAVs are fixed standard
  * constants, applied when the bed is assembled (BehavePlus `savrDead_[1]/[2]`).
  *
- * SCOPE (Phase 2): the bed is built from the DEAD size classes only, matching
- * the single-category Rothermel 1972 form in `rothermel.ts`. Live fuel loads are
- * carried in the catalogue faithfully but dropped at bed assembly, until the
- * dead/live two-category split lands (it needs a live moisture of extinction
- * computed from dead moisture — see the Phase-2 plan). The eight dead-only models
- * (FM1, 3, 6, 8, 9, 11, 12, 13) are exact. Of the five live-bearing models, the
- * drop is severe for some:
- *   - FM5 (brush): live is ~57% of load — dead-only roughly HALVES the fuel
- *     (materially wrong, not a minor approximation).
- *   - FM4 (chaparral): drops ~31%, and live fuel drives chaparral behaviour.
- *   - FM2 / FM7 / FM10: minor (~8–17% of load).
- * Treat FM5 and FM4 as not yet trustworthy; do not surface them as usable in the
- * step-5 fuel picker before the split lands.
+ * SCOPE: all 13 models are now served faithfully. {@link fuelBed} assembles the
+ * DEAD *and* LIVE size classes into the two-category Rothermel 1972 form in
+ * `rothermel.ts`, so the five live-bearing models (FM2/4/5/7/10) carry their live
+ * fuel — FM4 (chaparral) and FM5 (brush), previously untrustworthy dead-only
+ * (~31%/~57% of their load is live), are usable. Live fuel takes a scenario-level
+ * live-moisture scalar (the world layer is dead-only, plan §D6). {@link
+ * deadFuelBed} (dead classes only) is kept for the flame-residence σ and for
+ * single-category reference tests.
+ *
+ * NOTE — net-load change for MULTI-class dead beds (FM6/FM9 and other coarse
+ * models): the two-category reaction intensity weights net fuel load by Albini
+ * SAV-size-class surface area, whereas the earlier single-category code summed the
+ * dead loads raw. The two agree for single-dead-class models (FM1/FM3) but diverge
+ * for multi-class beds — FM6 R0 drops to ~0.27×, FM9 to ~0.83×. This corrects an
+ * earlier unvalidated simplification (see the Phase-2 plan §D6); it is not a silent
+ * reversal. The models are "exact" w.r.t. the published parameters, no longer
+ * "dead-only".
  */
 import type { FuelParams, IFuelModel, RothermelFuel } from '../models/IFuelModel';
 import type { FuelBed, FuelParticle } from './rothermel';
@@ -85,7 +89,7 @@ export const ANDERSON_13: ReadonlyMap<number, AndersonModel> = new Map(
   ROWS.map((r) => [r[0], rowToModel(r)]),
 );
 
-/** True if a model carries live fuel (so the dead-only bed is approximate). */
+/** True if a model carries live fuel (so it needs the two-category {@link fuelBed}). */
 export function hasLiveFuel(m: RothermelFuel): boolean {
   return m.liveHerbLoad > 0 || m.liveWoodyLoad > 0;
 }
@@ -96,9 +100,10 @@ export function hasLiveFuel(m: RothermelFuel): boolean {
  * SAV; the 10-hr and 100-hr classes use the standard {@link DEAD_10H_SAV} /
  * {@link DEAD_100H_SAV}. Zero-load classes are omitted (they contribute nothing).
  *
- * Phase-2 simplification: one moisture for all dead classes (the world has a
- * single moisture layer); real BehavePlus tracks 1-/10-/100-hr moistures apart.
- * Live fuel is dropped here — see the module header.
+ * One moisture for all dead classes (the world has a single dead-moisture layer);
+ * real BehavePlus tracks 1-/10-/100-hr moistures apart — a cheap future split (D6
+ * item 1). This helper is dead-only by design (flame-residence σ, single-category
+ * reference tests); {@link fuelBed} adds the live classes for the full model.
  */
 export function deadFuelBed(m: RothermelFuel, deadMoisture: number): FuelBed {
   const classes: Array<[number, number]> = [
@@ -115,6 +120,33 @@ export function deadFuelBed(m: RothermelFuel, deadMoisture: number): FuelBed {
     moistureOfExtinction: m.deadMx,
     heatContent: m.heatContent,
   };
+}
+
+/**
+ * Assemble a **two-category** Rothermel {@link FuelBed} from a fuel model: the
+ * dead size classes (as {@link deadFuelBed}) plus the live herbaceous and live
+ * woody classes, each tagged `category: 'live'`. The live classes carry a single
+ * `liveMoisture` fraction (e.g. 1.0 = 100%); real BehavePlus tracks live herb and
+ * live woody moistures apart, a cheap future split. This is the bed the
+ * two-category `surfaceSpread` needs to honour live-fuel loads faithfully — the
+ * eight dead-only models reduce to exactly {@link deadFuelBed}, while the five
+ * live-bearing models (FM2/4/5/7/10) now include their live fuel.
+ *
+ * The dead-fuel `deadMoisture` comes from the world moisture layer; the
+ * `liveMoisture` is a scenario-level scalar (the moisture layer is dead-only —
+ * live moisture runs 100–300% and gets its own representation; see the Phase-2
+ * plan D6 and `src/core/moisture.ts`).
+ */
+export function fuelBed(m: RothermelFuel, deadMoisture: number, liveMoisture: number): FuelBed {
+  const bed = deadFuelBed(m, deadMoisture);
+  const live: Array<[number, number]> = [
+    [m.liveHerbLoad, m.liveHerbSav],
+    [m.liveWoodyLoad, m.liveWoodySav],
+  ];
+  for (const [load, sav] of live) {
+    if (load > 0) bed.particles.push({ load, sav, moisture: liveMoisture, category: 'live' });
+  }
+  return bed;
 }
 
 const NONBURNABLE: FuelParams = { burnable: false, spreadRate: 0, burnDuration: 0 };

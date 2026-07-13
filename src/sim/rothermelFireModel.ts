@@ -3,7 +3,7 @@ import type { IFireModel } from '../models/IFireModel';
 import type { IFuelModel } from '../models/IFuelModel';
 import type { RothermelFuel } from '../models/IFuelModel';
 import { byteToFraction } from '../core/moisture';
-import { deadFuelBed } from './anderson13';
+import { deadFuelBed, fuelBed } from './anderson13';
 import {
   characteristicSAV,
   flameResidenceTime,
@@ -16,6 +16,9 @@ import {
 const NX = [-1, 0, 1, -1, 1, -1, 0, 1];
 const NY = [-1, -1, -1, 0, 0, 1, 1, 1];
 const NDIST = [Math.SQRT2, 1, Math.SQRT2, 1, 1, Math.SQRT2, 1, Math.SQRT2];
+
+/** Default live-fuel moisture [fraction] — 100%, a green-but-not-peak baseline. */
+const DEFAULT_LIVE_MOISTURE = 1.0;
 
 /**
  * Phase-2 fire model: a cellular automaton whose front speed *is* the Rothermel
@@ -69,7 +72,17 @@ export class RothermelFireModel implements IFireModel {
   // a fuel bed (an allocation) for every burning cell every tick.
   private readonly residenceSecById = new Map<number, number>();
 
-  constructor(private readonly fuel: IFuelModel) {}
+  /**
+   * Live-fuel moisture [fraction] applied to every live particle when the bed is
+   * assembled (the world moisture layer is dead-only — plan §D6). A scenario-level
+   * scalar; 1.0 = 100%, a defensible "green live fuel" default that lets the
+   * live-bearing shrub models carry while staging seasonal live-moisture dynamics
+   * for Phase 3. A single value for both live herb and woody (a cheap future split).
+   */
+  constructor(
+    private readonly fuel: IFuelModel,
+    private readonly liveMoisture = DEFAULT_LIVE_MOISTURE,
+  ) {}
 
   step(world: WorldState, dt: number): void {
     const { width, height, cellSize, layers } = world;
@@ -128,7 +141,7 @@ export class RothermelFireModel implements IFireModel {
         }
         if (!hasSource) continue;
 
-        const bed = deadFuelBed(rf, byteToFraction(moist[i]));
+        const bed = fuelBed(rf, byteToFraction(moist[i]), this.liveMoisture);
         const wu = windU[i];
         const wv = windV[i];
 

@@ -19,9 +19,10 @@
  *
  * Loads are oven-dry, by size class. The 10-hr and 100-hr dead SAVs are fixed
  * standard constants (109 and 30 ft⁻¹), not stored here — see `anderson13.ts`.
- * Live fuel is carried faithfully but not yet consumed: the Phase-2 fire model
- * builds its bed from the dead classes only (the single-category Rothermel 1972
- * form), so live-bearing models are approximate until the dead/live split lands.
+ * Dead and live loads are both consumed: `anderson13.ts` `fuelBed` assembles them
+ * into the two-category Rothermel 1972 form, so live-bearing models (FM2/4/5/7/10)
+ * carry their live fuel (live moisture is a scenario-level scalar — the world
+ * moisture layer is dead-only, plan §D6).
  */
 export interface RothermelFuel {
   /** Oven-dry 1-hr dead fuel load w₀ [lb/ft²]. */

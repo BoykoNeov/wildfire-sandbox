@@ -170,21 +170,32 @@ cheap; label honestly:
    distributes moisture (a coarse-fuel offset from the painted fine moisture, or
    independent per-class layers). No change to the pure Rothermel math, no
    encoding change. Cheap, deferrable, no scheduled home needed.
-2. **Dead-only bed → dead/live two-category split** — ⚠️ *NOT "model-side only."*
-   Only the catalogue *data* is already carried (`anderson13.ts` keeps live
-   loads/SAVs faithfully). The *computation* is single-category: `rothermel.ts`
-   has one `moistureOfExtinction`, computes one characteristic moisture and one
-   `etaM` (`rothermel.ts:280-284`). The split requires extending the **pure
-   Rothermel module** to the two-category 1972 form — live moisture of extinction
-   (`Mx_live = 2.9·W·(1 − M_dead/Mx_dead) − 0.226`), separate dead/live load
-   weighting and moisture damping, **and its own published test vectors** — plus
-   a live-moisture input (its own representation, per above). This is a
-   substantial step **comparable in size to Step 4**, not a fractional increment.
-   It is **unblocked by Step 3** (its precondition — a physical moisture layer —
-   is exactly Step 3) and can land any time after; it does **not** gate a
-   runnable Rothermel fire model (Step 4 runs fine dead-only). **FM4/FM5 stay out
-   of the Step-5 fuel picker until this lands** (dead-only halves FM5, drops FM4
-   ~31% — see `anderson13.ts` header).
+2. ✅ **Dead-only bed → dead/live two-category split** — *DONE* (out-of-band,
+   after step 5). `rothermel.ts` `surfaceSpread` is now the two-category 1972 form:
+   per-category surface-area weighting, live moisture of extinction
+   (`liveMoistureOfExtinction`, Albini 1976 `Mx_live = 2.9·W·(1 − M_dead/Mx_dead)
+   − 0.226`, clamped ≥ `Mx_dead`), per-category `etaM` summed in `I_R` (a wet dead
+   category no longer vetoes a live one), heat sink over both categories.
+   `anderson13.ts` `fuelBed(model, deadMoisture, liveMoisture)` assembles dead +
+   live particles; `RothermelFireModel` takes a scenario-level `liveMoisture`
+   scalar (default 1.0 = 100%; the world layer stays dead-only per D6). Assembly
+   cross-checked against an independent verbatim port of firelab/behave
+   (`surfaceFuelbedIntermediates.cpp` + `surfaceFireReactionIntensity.cpp`, commit
+   `d963287`) at zero wind/slope, plus a hand-worked live-Mx — `tests/rothermel-
+   twocategory.test.ts`. FM4/FM5 are ungated.
+
+   **Amendment (net-load weighting), recorded not silently reversed — cf. the D4
+   amendment:** the two-category `I_R` weights net fuel load by **Albini SAV-size-
+   class surface area** (`weightedFuelLoad = Σ g_i·wn_i`), whereas the step-4
+   single-category code summed the dead loads raw (`(Σw)·(1−S_T)`). They agree for
+   single-dead-class models (FM1/FM3) but diverge for MULTI-class beds: **FM6 R0
+   drops to ~0.27×, FM9 to ~0.83×** of the step-4 value. The raw sum was an
+   unvalidated simplification (the code already surface-area-weighted everything
+   *except* net load — internally inconsistent); the g-weighted form is the
+   faithful BehavePlus computation. No automated test broke (`spread-ros`/
+   `rothermel` use single-class FM1/grass; determinism uses the CA path), but the
+   demo Brush/Timber fronts are now slower and correct. `terrain.ts` moisture tuning
+   unchanged.
 3. **Static moisture → drying/wetting dynamics** — Phase 3, additive. A new
    system *writes* the byte layer over time from weather; the Step-3 encoding is
    read unchanged. See `docs/plans/phase-3-moisture-dynamics.md`.
@@ -246,12 +257,14 @@ tests/determinism.test.ts       updated per the determinism section
    renders each tick so strokes appear immediately. Interactive click-paint is
    browser-only (unverifiable headlessly); build + typecheck + suite are green.
 
-**Out-of-band — Dead/live two-category split (unblocked by Step 3).** *Not*
-numbered into the 1→5 flow because it is independent of Step 4/5 ordering: its
-only precondition is the physical moisture layer (Step 3). Substantial — extend
-the pure `rothermel.ts` to the two-category 1972 form + a live-moisture
-representation + its own test vectors (D6 item 2), then ungate FM4/FM5 in the
-picker. Comparable in size to Step 4; land any time after Step 3.
+**Out-of-band — Dead/live two-category split (unblocked by Step 3).** ✅ *DONE*
+(landed after Step 5). *Not* numbered into the 1→5 flow because it was independent
+of Step 4/5 ordering: its only precondition was the physical moisture layer
+(Step 3). Extended the pure `rothermel.ts` to the two-category 1972 form + a
+scenario-level live-moisture scalar + its own reference test vectors (D6 item 2);
+FM4/FM5 ungated. See D6 item 2 for the net-load-weighting amendment (FM6/FM9 ROS
+change). There is no Anderson-number picker UI — the editor paints generic ids
+0–3 — so "ungate" meant the model + docs, not a control.
 
 **Deferred, no home needed — per-class dead moisture** (1-/10-/100-hr apart): a
 cheap model-side tweak to `deadFuelBed()` distribution whenever wanted (D6

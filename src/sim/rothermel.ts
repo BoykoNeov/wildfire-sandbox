@@ -25,14 +25,24 @@ export const TOTAL_MINERAL_CONTENT = 0.0555;
 /** Effective (silica-free) mineral content S_e [fraction] (Rothermel: 0.010). */
 export const EFFECTIVE_MINERAL_CONTENT = 0.01;
 
+/** A fuel particle's life state. Dead and live burn as two separate categories. */
+export type FuelCategory = 'dead' | 'live';
+
 /** One fuel-particle size class within a fuel bed (e.g. 1-hr dead, live herb). */
 export interface FuelParticle {
   /** Oven-dry load w₀ [lb/ft²]. */
   load: number;
   /** Surface-area-to-volume ratio σ [ft⁻¹]. */
   sav: number;
-  /** Fuel moisture content M_f [fraction, e.g. 0.06 = 6%]. */
+  /** Fuel moisture content M_f [fraction, e.g. 0.06 = 6% dead, 1.5 = 150% live]. */
   moisture: number;
+  /**
+   * Life state. Dead and live fuels form two separate categories in the 1972
+   * two-category model, each with its own weighted load / moisture / moisture of
+   * extinction (Rothermel 1972 §"fuel complexes with several particle sizes").
+   * Omitted ⇒ `'dead'`, so a single-category (dead-only) bed reads unchanged.
+   */
+  category?: FuelCategory;
 }
 
 /** A fuel bed: its particle classes plus bed-level descriptors. */
@@ -247,15 +257,79 @@ export function metersPerSecToFtPerMin(metersPerSec: number): number {
   return (metersPerSec * 60) / 0.3048;
 }
 
+/**
+ * Live-fuel moisture of extinction M_x,live [fraction]. Albini 1976 p.89 — the
+ * live fuel's own extinction moisture, driven by how much *fine dead* fuel is
+ * present to preheat and dry the live fuel and how dry that dead fuel is:
+ *
+ *   M_x,live = 2.9·W·(1 − M_f,dead / M_x,dead) − 0.226,  clamped ≥ M_x,dead
+ *
+ * where `W` = (fine dead load) / (fine live load) with fineness weighting
+ * exp(−138/σ) for dead and exp(−500/σ) for live, and `M_f,dead` is the
+ * fineness-weighted dead-fuel moisture. A drier / more abundant dead component
+ * pushes the live extinction moisture up (live fuel carries more readily);
+ * `deadMx` is the bed's dead moisture of extinction. With no live fuel the value
+ * is unused — this returns `deadMx`.
+ */
+export function liveMoistureOfExtinction(bed: FuelBed): number {
+  const deadMx = bed.moistureOfExtinction;
+  let fineDead = 0; // Σ w₀·exp(−138/σ) over dead particles
+  let fineDeadMoisture = 0; // Σ w₀·exp(−138/σ)·M_f over dead
+  let fineLive = 0; // Σ w₀·exp(−500/σ) over live particles
+  for (const p of bed.particles) {
+    if (p.sav <= 0) continue;
+    if (isLive(p)) {
+      fineLive += p.load * Math.exp(-500 / p.sav);
+    } else {
+      const w = p.load * Math.exp(-138 / p.sav);
+      fineDead += w;
+      fineDeadMoisture += w * p.moisture;
+    }
+  }
+  if (fineLive <= 0 || fineDead <= 0 || deadMx <= 0) return deadMx;
+  const deadMoisture = fineDeadMoisture / fineDead;
+  const mxLive = 2.9 * (fineDead / fineLive) * (1 - deadMoisture / deadMx) - 0.226;
+  return mxLive < deadMx ? deadMx : mxLive;
+}
+
+/** True for a live-category particle (dead is the default when `category` is unset). */
+function isLive(p: FuelParticle): boolean {
+  return p.category === 'live';
+}
+
+/** SAV size class (0..5) for the Albini net-load surface-area weighting. */
+function savSizeClass(sav: number): number {
+  return sav >= 1200 ? 0 : sav >= 192 ? 1 : sav >= 96 ? 2 : sav >= 48 ? 3 : sav >= 16 ? 4 : 5;
+}
+
 // ───────────────────────── the assembled model ─────────────────────────
 
 /**
- * Run the full Rothermel surface-spread model for one fuel bed + environment.
+ * Run the full **two-category** Rothermel surface-spread model for one fuel bed +
+ * environment (Rothermel 1972 with Albini 1976 refinements; assembly cross-checked
+ * against firelab/behave `surfaceFuelbedIntermediates.cpp` +
+ * `surfaceFireReactionIntensity.cpp`, commit d963287f60a6).
  *
  *   R = I_R·ξ·(1 + φ_w + φ_s) / (heat sink)        [ft/min]
  *
- * Returns 0 spread when the fuel cannot carry fire (no load, or moisture at/above
- * the moisture of extinction → η_M = 0 → I_R = 0).
+ * Dead and live particles form two categories, each weighted and damped on its
+ * own, then summed in the reaction intensity:
+ *
+ *   I_R = Γ′·h·η_s·(w_n,dead·η_M,dead + w_n,live·η_M,live)
+ *
+ * Weighting (Albini 1976): within a category, particles are weighted by their
+ * fraction of the category's surface area `f_i`; the two categories are weighted
+ * by their fraction of *total* surface area `f_cat`. The **net loads** `w_n` use
+ * the coarser SAV-size-class surface-area fraction `g_i` (particles binned into
+ * six σ classes, fractions summed per bin) — this is why a bed with several dead
+ * classes does **not** reduce to the raw summed load. A single-particle category
+ * (e.g. FM1 grass) has f_i = g_i = 1, so it matches the single-category form
+ * exactly. Live fuel gets its own moisture of extinction ({@link
+ * liveMoistureOfExtinction}); heat content and mineral damping are uniform across
+ * categories for the standard fuel models.
+ *
+ * Returns 0 spread when the fuel cannot carry fire (no load, or *both* categories
+ * at/above their moisture of extinction → I_R = 0).
  */
 export function surfaceSpread(bed: FuelBed, env: SpreadEnv): SpreadResult {
   const zero: SpreadResult = {
@@ -266,34 +340,95 @@ export function surfaceSpread(bed: FuelBed, env: SpreadEnv): SpreadResult {
     flameLength: 0,
   };
 
+  const ps = bed.particles;
+  // Category surface areas A = Σ σ·w₀/ρ_p (ρ_p cancels in every fraction below,
+  // so it is dropped — A here is Σ σ·w₀). One pass to total the weights.
   let totalLoad = 0;
-  let sw = 0; // Σ σ·w₀ — surface-area weights
-  let swMoisture = 0; // Σ σ·w₀·M_f
-  for (const p of bed.particles) {
+  let aDead = 0; // Σ σ·w₀ over dead
+  let aLive = 0; // Σ σ·w₀ over live
+  for (const p of ps) {
     totalLoad += p.load;
-    const w = p.sav * p.load;
-    sw += w;
-    swMoisture += w * p.moisture;
+    if (p.sav <= 0 || p.load <= 0) continue;
+    if (isLive(p)) aLive += p.sav * p.load;
+    else aDead += p.sav * p.load;
   }
-  if (totalLoad <= 0 || bed.depth <= 0 || sw <= 0) return zero;
+  const aTotal = aDead + aLive;
+  if (totalLoad <= 0 || bed.depth <= 0 || aTotal <= 0) return zero;
 
-  const sigma = characteristicSAV(bed.particles);
+  const fCatDead = aDead / aTotal;
+  const fCatLive = aLive / aTotal;
+
+  // Per-category accumulators, each f_i-weighted (f_i = σw / A_category):
+  //   characteristic SAV, weighted moisture, and the heat-sink inner sum.
+  let savDead = 0;
+  let savLive = 0;
+  let moistDead = 0;
+  let moistLive = 0;
+  let hsDead = 0; // Σ f_i·Q_ig(M_f)·ε(σ) over dead
+  let hsLive = 0;
+  for (const p of ps) {
+    if (p.sav <= 0 || p.load <= 0) continue;
+    const a = p.sav * p.load;
+    const qigEps = heatOfPreignition(p.moisture) * effectiveHeatingNumber(p.sav);
+    if (isLive(p)) {
+      const f = a / aLive;
+      savLive += f * p.sav;
+      moistLive += f * p.moisture;
+      hsLive += f * qigEps;
+    } else {
+      const f = a / aDead;
+      savDead += f * p.sav;
+      moistDead += f * p.moisture;
+      hsDead += f * qigEps;
+    }
+  }
+
+  // Net loads w_n use the SAV-size-class surface-area fraction g_i (Albini 1976).
+  // g_i = Σ_{j in same category & σ-class} f_j; with ≤3 particles per category a
+  // nested scan is cheapest and allocation-free.
+  const oneMinusMineral = 1 - TOTAL_MINERAL_CONTENT;
+  let wnDead = 0;
+  let wnLive = 0;
+  for (let i = 0; i < ps.length; i++) {
+    const pi = ps[i];
+    if (pi.sav <= 0 || pi.load <= 0) continue;
+    const live = isLive(pi);
+    const cls = savSizeClass(pi.sav);
+    // BehavePlus assigns no size-class net-load weight below σ = 16 ft⁻¹ (the
+    // coarsest bin), so such particles contribute 0 to w_n. No standard Anderson
+    // model reaches it (min is the 100-hr dead class, σ = 30) — this only matters
+    // for custom ultra-coarse fuels.
+    if (cls === 5) continue;
+    let g = 0; // Σ f_j over same-category particles sharing pi's σ-class
+    for (let j = 0; j < ps.length; j++) {
+      const pj = ps[j];
+      if (pj.sav <= 0 || pj.load <= 0 || isLive(pj) !== live) continue;
+      if (savSizeClass(pj.sav) !== cls) continue;
+      g += (pj.sav * pj.load) / (live ? aLive : aDead);
+    }
+    const wn = g * pi.load * oneMinusMineral;
+    if (live) wnLive += wn;
+    else wnDead += wn;
+  }
+
+  // Characteristic SAV of the whole bed = surface-area-weighted mean of the two
+  // category SAVs. Packing ratio uses the total load over the bed depth.
+  const sigma = fCatDead * savDead + fCatLive * savLive;
   const bulkDensity = meanBulkDensity(totalLoad, bed.depth);
   const beta = meanPackingRatio(bulkDensity);
   const betaRatio = beta / optimalPackingRatio(sigma);
 
-  // Characteristic fuel moisture = surface-area-weighted mean across particles.
-  const moisture = swMoisture / sw;
-  const etaM = moistureDamping(moisture, bed.moistureOfExtinction);
+  const etaMDead = aDead > 0 ? moistureDamping(moistDead, bed.moistureOfExtinction) : 0;
+  const etaMLive = aLive > 0 ? moistureDamping(moistLive, liveMoistureOfExtinction(bed)) : 0;
   const etaS = mineralDamping();
-  if (etaM <= 0) return zero; // at/above moisture of extinction
 
   const gamma = reactionVelocity(sigma, betaRatio);
-  const netLoad = netFuelLoad(totalLoad);
-  const ir = reactionIntensity(gamma, netLoad, bed.heatContent, etaM, etaS);
+  // I_R sums the two categories; a wet dead category does not veto a live one.
+  const ir = gamma * bed.heatContent * etaS * (wnDead * etaMDead + wnLive * etaMLive);
+  if (ir <= 0) return zero; // both categories at/above their moisture of extinction
 
   const xi = propagatingFluxRatio(sigma, beta);
-  const hsk = heatSink(bed.particles, bulkDensity);
+  const hsk = bulkDensity * (fCatDead * hsDead + fCatLive * hsLive);
   if (hsk <= 0) return zero;
 
   const r0 = (ir * xi) / hsk;
