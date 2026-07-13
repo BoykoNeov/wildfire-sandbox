@@ -57,7 +57,7 @@ updraft."* This is deliberately not firebrand-transport CFD.
 
 ## Verified
 
-- **`tests/spotting.test.ts`** (4):
+- **`tests/spotting.test.ts`** (5):
   - **Firebreak jump (A/B, seed sweep).** Dry timber split by a *nonburnable*
     firebreak (an absolute barrier — the surface fire can never enter it), a
     burning wall parked upwind, strong east wind. **With** spotting the downwind
@@ -65,9 +65,14 @@ updraft."* This is deliberately not firebrand-transport CFD.
     proving the crossings are embers, not the front leaking across.
   - **Downwind directionality.** Breaks on both sides of the source; only the
     downwind (east) field catches embers, the upwind (west) one stays cold.
+  - **No same-tick cascade (pins the deferred-write fix).** One burning source, one
+    tick, spotting only: at most one new ignition per seed (a source throws ≤1
+    ember/tick, and the lit cell isn't re-scanned this tick). Seeds are chosen to
+    include ones that cascade to 2 under a live-write regression, so the test would
+    catch it; non-vacuous (≥1 seed ignites).
   - **Determinism.** Same seed → byte-for-byte identical `fire`, with a guard that
     spotting actually fired (non-vacuous).
-- Full suite **119/119**, typecheck clean, `npm run frame` renders.
+- Full suite **120/120**, typecheck clean, `npm run frame` renders.
 - Ad-hoc probe: the firebreak scenario ignites ~100–124 far-field cells per seed
   (out of 208) — a strong, non-marginal signal, so the test is not a tuning hostage.
 - **Not dramatic in the default browser demo** — spotting is punctuation on an

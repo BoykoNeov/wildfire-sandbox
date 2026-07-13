@@ -75,7 +75,11 @@ export class SpottingSystem implements System {
         if (canopyFrac <= 0) continue;
 
         // Wind carries the brand and marks the updraft; no wind ⇒ no spotting
-        // (also sidesteps an undefined bearing at dead calm).
+        // (also sidesteps an undefined bearing at dead calm). Sampled at the SOURCE
+        // cell `i` — the brand lofts from here and rides this cell's wind. (This is
+        // transport, not spread ROS: the destination-sampling convention settled on
+        // `world.ts` windU/windV is about which cell's wind drives a *front into a
+        // cell*, and does not apply to where an ember launched from `i` travels.)
         const wu = windU[i];
         const wv = windV[i];
         const windSpeed = Math.hypot(wu, wv);

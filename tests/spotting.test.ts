@@ -149,6 +149,39 @@ describe('spotting is downwind-directional', () => {
   });
 });
 
+describe('spotting defers ember writes (no same-tick cascade)', () => {
+  it('one burning source ignites at most one cell in a single tick (every seed)', () => {
+    // Pins the double-buffer discipline. In ONE tick a single burning cell throws
+    // at most one ember, so at most one new ignition. Deferred writes guarantee it:
+    // the cell the ember lights is not re-scanned as a source this tick. A live-write
+    // regression would let that lit cell — downwind, hence later in the row-major
+    // sweep — re-loft in the *same* tick and cascade to >1. The seeds below are
+    // chosen to include ones that DO cascade to 2 under the live-write bug (e.g. 29),
+    // so this test would catch a reversion; strong east wind maximises launch odds.
+    const W = 40;
+    const Hh = 5;
+    const src = 2 * W + 2;
+    let everIgnited = false;
+    for (const seed of [14, 21, 29, 39, 49, 51]) {
+      const world = createWorld({ width: W, height: Hh, seed, cellSize: 30 });
+      world.layers.fuel.data.fill(FM_TIMBER);
+      world.layers.moisture.data.fill(DRY);
+      world.layers.canopy.data.fill(255); // max torching → highest launch probability
+      world.layers.windU.data.fill(40); // strong east wind
+      world.layers.fire.data[src] = FireState.Burning;
+
+      new Simulation(world, [new SpottingSystem(new Anderson13FuelModel())]).step(1);
+
+      const fire = world.layers.fire.data;
+      let n = 0;
+      for (let i = 0; i < fire.length; i++) if (i !== src && fire[i] !== FireState.Unburned) n++;
+      expect(n).toBeLessThanOrEqual(1); // no same-tick cascade
+      if (n === 1) everIgnited = true;
+    }
+    expect(everIgnited).toBe(true); // non-vacuous: spotting actually fired in ≥1 seed
+  });
+});
+
 describe('spotting is deterministic', () => {
   it('same seed → byte-for-byte identical fire (and spotting actually fired)', () => {
     const run = (): WorldState => {
