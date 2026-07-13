@@ -31,8 +31,10 @@ Each must be runnable/testable before the next, per the roadmap discipline.
    Rothermel ROS) swapped in behind the seam; `CaFireModel` stays as the Phase-1
    reference. Acceptance test: measured front speed on a homogeneous field
    matches the analytic Rothermel ROS within tolerance.
-5. **Terrain editor** — brush-based paint tools over elevation/fuel/moisture/
+5. ✅ **Terrain editor** — brush-based paint tools over elevation/fuel/moisture/
    canopy, wired in `main.ts`. Writes layer bytes only; the sim is untouched.
+   (Done — pure geometry in `src/editor/brush.ts`, DOM shell in
+   `src/editor/terrainEditor.ts`; plus an Ignite tool. See §Sequencing 5.)
 
 ## Architecture fit (do not break the invariants)
 
@@ -233,7 +235,16 @@ tests/determinism.test.ts       updated per the determinism section
    front speed matches analytic R0 within ~5%; Rothermel-path determinism added;
    terrain moisture lowered to 6..52 per §D6 so the front carries. See the D4
    amendment above. Runs dead-only — the dead/live split is not a prerequisite.)*
-5. Terrain editor (independent — can run in parallel with 1–4 or land last).
+5. ✅ Terrain editor: `src/editor/brush.ts` (pure disc/stroke geometry +
+   `tests/brush.test.ts`) + `src/editor/terrainEditor.ts` (floating toolbar,
+   pointer-drag paint, live cell readout, pause), wired in `main.ts` only. Paints
+   elevation/fuel/moisture/canopy + an Ignite tool (burnable cells only, via the
+   shared `ignite()` helper). **No extinguish tool** — clearing a cell would leave
+   the fire model's private `progress` accumulator ≥ 1 (instant re-ignition);
+   suppression is Phase 4, not a paint tool. Writes layer bytes only, no RNG →
+   determinism/invariants intact. Editor owns `paused`; the frame loop still
+   renders each tick so strokes appear immediately. Interactive click-paint is
+   browser-only (unverifiable headlessly); build + typecheck + suite are green.
 
 **Out-of-band — Dead/live two-category split (unblocked by Step 3).** *Not*
 numbered into the 1→5 flow because it is independent of Step 4/5 ordering: its
@@ -250,7 +261,8 @@ Each step typechecks + passes tests before the next (Conventional Commits).
 
 ## Open questions for the user
 
-- **Editor priority** — land it last (after the science core) or in parallel?
+- ~~**Editor priority** — land it last (after the science core) or in parallel?~~
+  *Settled: landed last, after steps 1–4.*
 - **Determinism test** — switch to self-consistency, or keep a regenerated
   golden hash?
 - **Phase-2 fuel id mapping** — *partly settled in step 2:*

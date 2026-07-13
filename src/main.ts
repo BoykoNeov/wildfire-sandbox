@@ -5,6 +5,7 @@ import { TerrainFuelModel } from './sim/terrainFuelModel';
 import { UniformWeatherProvider } from './sim/uniformWeather';
 import { RothermelFireModel } from './sim/rothermelFireModel';
 import { CanvasRenderer } from './render/canvasRenderer';
+import { TerrainEditor } from './editor/terrainEditor';
 
 const WIDTH = 256;
 const HEIGHT = 256;
@@ -34,8 +35,16 @@ const sim = new Simulation(world, [weather, fire]);
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const renderer = new CanvasRenderer(canvas, world);
 
+// Terrain editor (Phase-2 step 5): brush-paint over the data layers. Writes layer
+// bytes only — never a system — so the invariants hold. It owns a pause flag so
+// you can author terrain without the front advancing.
+const editor = new TerrainEditor(canvas, world);
+
 function frame(): void {
-  for (let i = 0; i < STEPS_PER_FRAME; i++) sim.step(DT);
+  if (!editor.paused) {
+    for (let i = 0; i < STEPS_PER_FRAME; i++) sim.step(DT);
+  }
+  // Always render, even when paused, so brush strokes appear immediately.
   renderer.render(world);
   requestAnimationFrame(frame);
 }
