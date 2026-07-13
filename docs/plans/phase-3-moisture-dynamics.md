@@ -89,12 +89,13 @@ verify headless.
   `RothermelFireModel` (Phase-2 D6 item 2). A dynamic (slow, seasonal) live curve
   is a later addition, not here.
 
-## The other Phase-3 pieces (still forward stubs)
+## The other Phase-3 pieces
 
-- **Time-varying / spatially-varying wind.** The two fire models currently read
-  wind from different cells: `RothermelFireModel` samples the *destination* cell,
-  `CaFireModel` samples the *source* neighbour. Moot under today's uniform wind but
-  diverges once wind varies — **settle a single convention when spatial wind lands.**
+- **Time-varying / spatially-varying wind** — **LANDED.** See
+  [`phase-3-dynamic-wind.md`](./phase-3-dynamic-wind.md). The wind-sampling
+  convention noted here (Rothermel sampled the *destination* cell, `CaFireModel` the
+  *source* neighbour) is settled: **both models sample the destination cell**, pinned
+  by `tests/wind-convention.test.ts`.
 - **Spotting** — embers launched ahead of the front start new ignitions. The most
   complex of the three; moisture dynamics was deliberately the smallest and a clean
-  place to start.
+  place to start. The last remaining Phase-3 item.

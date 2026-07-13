@@ -3,7 +3,8 @@
  * shared palette the canvas renderer uses. This mirrors `main.ts`'s pipeline
  * (terrain gen -> uniform weather -> Rothermel ROS fire -> colour mapping)
  * without a browser, so the output is honest evidence of what the sandbox draws.
- * Includes the Phase-3 fuel-moisture system (weather -> moisture -> fire).
+ * Includes the Phase-3 fuel-moisture system and dynamic (shifting, gusty) wind
+ * (weather -> moisture -> fire).
  *
  * Run: npx vite-node tools/renderFrame.ts
  */
@@ -13,7 +14,7 @@ import { createWorld, type WorldState } from '../src/core/world';
 import { Simulation } from '../src/core/simulation';
 import { generateTerrain, igniteNearestBurnable } from '../src/gen/terrain';
 import { TerrainFuelModel } from '../src/sim/terrainFuelModel';
-import { UniformWeatherProvider } from '../src/sim/uniformWeather';
+import { DynamicWeatherProvider } from '../src/sim/dynamicWeather';
 import { FuelMoistureSystem } from '../src/sim/fuelMoistureSystem';
 import { RothermelFireModel } from '../src/sim/rothermelFireModel';
 import { cellRGB, type Rgb } from '../src/render/palette';
@@ -92,7 +93,15 @@ generateTerrain(world);
 igniteNearestBurnable(world, WIDTH >> 1, HEIGHT >> 1);
 
 const sim = new Simulation(world, [
-  new UniformWeatherProvider(1.5, 0.6, { temperatureC: 30, relativeHumidity: 20, rainRate: 0 }),
+  // Same dynamic wind as main.ts: shifts NE → N → NW over 30 sim-minutes, gusty.
+  new DynamicWeatherProvider(
+    [
+      { time: 0, u: 1.6, v: 0.7 },
+      { time: 900, u: 0.2, v: 1.4 },
+      { time: 1800, u: -1.5, v: 1.0 },
+    ],
+    { temperatureC: 30, relativeHumidity: 20, rainRate: 0, gust: { seed: SEED, speedAmp: 0.4, dirAmp: 0.35 } },
+  ),
   new FuelMoistureSystem(),
   new RothermelFireModel(new TerrainFuelModel()),
 ]);

@@ -66,6 +66,13 @@ export class CaFireModel implements IFireModel {
         const moistFactor = clamp01(1 - moist[i] / 255);
         if (moistFactor <= 0) continue;
 
+        // Wind is sampled at THIS (destination) cell — the fuel bed the front is
+        // entering — matching the moisture read above and RothermelFireModel's
+        // wind[i]. See world.ts windU/windV for the convention. Constant across
+        // neighbours, so hoist it out of the loop.
+        const wu = windU[i];
+        const wv = windV[i];
+
         let pNoIgnite = 1;
         for (let n = 0; n < 8; n++) {
           const nx = x + NX[n];
@@ -80,7 +87,7 @@ export class CaFireModel implements IFireModel {
           const dy = -NY[n] / dist;
 
           // Wind: align the spread direction with the local wind vector.
-          const align = dx * windU[ni] + dy * windV[ni];
+          const align = dx * wu + dy * wv;
           const windFactor = Math.exp(WIND_COEFF * align);
 
           // Slope: rise over run from neighbour to this cell (uphill boosts).

@@ -29,6 +29,14 @@ export interface Layers {
    * the way the wind blows; the Rothermel fire model reads its components as
    * **midflame wind in m/s** (plan §D3). (The legacy Phase-1 `CaFireModel` instead
    * treats them as a dimensionless down-wind alignment strength.)
+   *
+   * **Sampling convention (settled Phase 3): both fire models sample wind at the
+   * *destination* cell** — the cell the front is spreading *into*, whose fuel bed
+   * and moisture already set the spread rate. Wind is a field like moisture; pair
+   * it with the bed it drives. Only slope/direction is inherently relational
+   * (neighbour→cell). Moot under uniform wind (every cell equal); it becomes
+   * load-bearing once a provider writes a spatially-varying field. See
+   * `tests/wind-convention.test.ts`, which pins it.
    */
   windU: Layer<Float32Array>;
   windV: Layer<Float32Array>;

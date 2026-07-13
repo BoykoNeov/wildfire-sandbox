@@ -2,7 +2,7 @@ import { createWorld } from './core/world';
 import { Simulation } from './core/simulation';
 import { generateTerrain, igniteNearestBurnable } from './gen/terrain';
 import { TerrainFuelModel } from './sim/terrainFuelModel';
-import { UniformWeatherProvider } from './sim/uniformWeather';
+import { DynamicWeatherProvider } from './sim/dynamicWeather';
 import { FuelMoistureSystem } from './sim/fuelMoistureSystem';
 import { RothermelFireModel } from './sim/rothermelFireModel';
 import { CanvasRenderer } from './render/canvasRenderer';
@@ -27,13 +27,26 @@ igniteNearestBurnable(world, WIDTH >> 1, HEIGHT >> 1);
 // no longer mis-served as tall grass. `CaFireModel`/`BasicFuelModel` remain in the
 // tree as the Phase-1 reference (and back the determinism test).
 const fuel = new TerrainFuelModel();
-// Wind vector read by the Rothermel model as midflame wind in m/s (plan §D3); the
-// ambient drivers feed the Phase-3 fuel-moisture dynamics (dry, no rain by default).
-const weather = new UniformWeatherProvider(1.5, 0.6, {
-  temperatureC: 30,
-  relativeHumidity: 20,
-  rainRate: 0,
-});
+// Phase-3 dynamic wind (plan §"time-varying wind"). Midflame wind in m/s (plan §D3)
+// that SHIFTS over the run — the headline event: it starts blowing ~NE, swings
+// through calm, and settles blowing ~NW over 30 simulated minutes, so whichever
+// flank is dangerous flips mid-scenario (Handoff §4.3). A drifting gust field
+// makes the wind spatially varied — which is what makes the destination-cell
+// sampling convention load-bearing (see world.ts windU/windV). Ambient drivers
+// (dry, no rain) feed the Phase-3 fuel-moisture dynamics.
+const weather = new DynamicWeatherProvider(
+  [
+    { time: 0, u: 1.6, v: 0.7 }, // blowing toward NE
+    { time: 900, u: 0.2, v: 1.4 }, // swinging north…
+    { time: 1800, u: -1.5, v: 1.0 }, // …settling toward NW
+  ],
+  {
+    temperatureC: 30,
+    relativeHumidity: 20,
+    rainRate: 0,
+    gust: { seed: SEED, speedAmp: 0.4, dirAmp: 0.35 },
+  },
+);
 // Phase 3: dead-fuel moisture evolves toward EMC each tick. Ordered weather →
 // moisture → fire so the fire model reads the freshly-updated moisture. Writes the
 // moisture layer only; systems talk through layers (Handoff §3.1).
