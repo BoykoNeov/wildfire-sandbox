@@ -2,6 +2,7 @@ import { FireState, type WorldState } from '../core/world';
 import type { ISuppressionAgent } from '../models/ISuppressionAgent';
 import type { IFuelModel } from '../models/IFuelModel';
 import { fractionToByte } from '../core/moisture';
+import { advanceToward, type TravelParams } from './suppressionTravel';
 import { Fuel } from './basicFuelModel';
 
 /**
@@ -77,7 +78,7 @@ const KNOCKDOWN_MOISTURE = 0.6;
 /** Direct-attack footprint radius [cells]. A point crew wets a small patch; the
  *  front flanks it — which is precisely why a crew *holds* rather than contains. */
 const KNOCKDOWN_RADIUS = 1;
-/** Travel resistance by fuel id — heavy fuel slows a crew. Effective speed = speed / R. */
+/** Travel resistance by fuel id — heavy fuel slows a crew on foot. Effective speed = speed / R. */
 const FUEL_RESISTANCE: Record<number, number> = {
   [Fuel.Nonburnable]: 1, // road / rock / water — treat as easy going
   [Fuel.Grass]: 1,
@@ -92,7 +93,7 @@ export class GroundCrew implements ISuppressionAgent {
 
   private px: number;
   private py: number;
-  private readonly speed: number;
+  private readonly travel_: TravelParams;
   private readonly orders: CrewOrder[] = [];
   /** Seconds of work banked on the current cut-line cell. */
   private lineProgress = 0;
@@ -105,7 +106,11 @@ export class GroundCrew implements ISuppressionAgent {
   ) {
     this.px = opts.x;
     this.py = opts.y;
-    this.speed = opts.speed ?? DEFAULT_SPEED;
+    this.travel_ = {
+      speed: opts.speed ?? DEFAULT_SPEED,
+      resistance: FUEL_RESISTANCE,
+      slopePenalty: SLOPE_PENALTY,
+    };
     this.name = `suppression:hand-crew${opts.id ? `:${opts.id}` : ''}`;
   }
 
@@ -176,48 +181,16 @@ export class GroundCrew implements ISuppressionAgent {
   }
 
   /**
-   * Advance toward the order's cell at the fuel/slope-adjusted speed. Returns true
-   * iff the crew was already at the target at the start of the tick (so it may work
-   * this tick); returns false while still en route (including the tick it arrives).
+   * Advance toward the order's cell at the fuel/slope-adjusted speed (shared
+   * {@link advanceToward} substrate). Returns true iff the crew was already at the
+   * target at the start of the tick (so it may work this tick); returns false while
+   * still en route (including the tick it arrives).
    */
   private travel(world: WorldState, order: CrewOrder, dt: number): boolean {
-    const dx = order.x - this.px;
-    const dy = order.y - this.py;
-    const dist = Math.hypot(dx, dy);
-    if (dist <= 1e-6) return true; // already on station
-
-    const step = this.effectiveSpeed(world, dx, dy) * dt;
-    if (step >= dist) {
-      this.px = order.x;
-      this.py = order.y;
-    } else {
-      this.px += (dx / dist) * step;
-      this.py += (dy / dist) * step;
-    }
-    return false; // this tick was travel
-  }
-
-  /** Cells/sec here and now: base speed divided by fuel and upslope resistance. */
-  private effectiveSpeed(world: WorldState, dx: number, dy: number): number {
-    const { width, height, cellSize, layers } = world;
-    const cx = clamp(Math.round(this.px), 0, width - 1);
-    const cy = clamp(Math.round(this.py), 0, height - 1);
-    const ci = cy * width + cx;
-
-    const fuelR = FUEL_RESISTANCE[layers.fuel.data[ci]] ?? 1;
-
-    // Upslope grade toward the next step cell (upslope-only, like Rothermel's slope).
-    const sx = Math.sign(dx);
-    const sy = Math.sign(dy);
-    let slopeR = 1;
-    if (sx !== 0 || sy !== 0) {
-      const nx = clamp(cx + sx, 0, width - 1);
-      const ny = clamp(cy + sy, 0, height - 1);
-      const run = Math.hypot(sx, sy) * cellSize;
-      const rise = layers.elevation.data[ny * width + nx] - layers.elevation.data[ci];
-      if (rise > 0) slopeR = 1 + (rise / run) * SLOPE_PENALTY;
-    }
-    return this.speed / (fuelR * slopeR);
+    const r = advanceToward(world, this.px, this.py, order.x, order.y, this.travel_, dt);
+    this.px = r.x;
+    this.py = r.y;
+    return r.arrived;
   }
 
   private workCutLine(world: WorldState, order: CrewOrder, dt: number): void {
@@ -281,8 +254,4 @@ export class GroundCrew implements ISuppressionAgent {
     }
     // Held task: do not pop — the crew stays on station knocking down each tick.
   }
-}
-
-function clamp(v: number, lo: number, hi: number): number {
-  return v < lo ? lo : v > hi ? hi : v;
 }

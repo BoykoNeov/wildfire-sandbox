@@ -152,16 +152,40 @@ determinism test untouched (the golden uses seed terrain that never paints id 4)
 
 ---
 
-## 4b — Engines (finite water, direct attack, reload) — *sketch*
+## 4b — Engines (finite water, direct attack, reload) — **✅ DONE (2026-07-13)**
 
-- `Engine implements ISuppressionAgent`, `agentType = 'engine'`. Same
-  travel/work substrate as the crew, plus a **finite `waterLiters`** resource.
-- **Direct attack** = a stronger, wider `moisture` knockdown than a hand crew, but
-  it **draws down water** per second of application. When empty, the engine must
-  **travel to a water source** (a `fuel`/terrain feature, or a static refill point)
-  and **reload** over time — a reload cycle (§4.4 logistics). Fatigue optional.
-- Teaching beat: even with water, an engine only *holds* an edge; the durable
-  containment is still the line the crew cut. Reinforces 4a.
+- `Engine implements ISuppressionAgent`, `agentType = 'engine'` (`src/sim/engine.ts`).
+  Shares the crew's travel/work substrate — extracted to **`src/sim/suppressionTravel.ts`**
+  (pure `advanceToward` + `effectiveSpeed` taking a per-agent `TravelParams`
+  {speed, resistance table, slope penalty}; the crew was refactored onto it, 4a
+  tests still green) — plus a **finite water tank**. The engine is road-biased:
+  higher off-road fuel/slope resistance than the crew on foot.
+- **Direct attack** = a wider (5×5 vs 3×3) and wetter (0.9 vs 0.6) `moisture`
+  knockdown than a hand crew, but it **draws the tank down** per second of
+  application. "Stronger" is **coverage + persistence**, NOT a harder instantaneous
+  hit — the crew's 0.6 already zeros ROS on contact (above every Anderson
+  extinction moisture); the higher saturation just dries back toward EMC more slowly
+  so the engine's line holds longer after it leaves.
+- **Reload cycle (§4.4 logistics):** when the tank hits 0 with work still queued,
+  the engine breaks off, drives to a **static configurable refill point** (default
+  = spawn cell; no water-terrain detection — `Nonburnable` is ambiguously rock *or*
+  water), tops up over `refillSeconds`, and **resumes the same held station**
+  automatically (the direct-attack order is sticky, so it stays at the queue head).
+  No fatigue: an engine is water-limited, not muscle-limited.
+- **Determinism:** pure arithmetic, **no `world.rng` draw** — load-bearing because
+  the engine steps *before* `SpottingSystem` (the only rng consumer); a draw would
+  desync spotting and the CA-only golden would not catch it.
+- Teaching beat: even with water, an engine only *holds* an edge (its finite
+  footprint is flanked); the durable containment is still the line the crew cut.
+  Reinforces 4a.
+- Wired in `main.ts` (systems band `weather → moisture → crew → engine → fire →
+  spotting`; an "Engine attack" tool + water gauge added to the command shell) and
+  `tools/renderFrame.ts`. Tests: **`tests/engine.test.ts`** (5) — footprint+drawdown,
+  no-draw-while-travelling, order-replacement, the **four-verb reload cycle**
+  (holds → runs dry → drives to water → reloads → resumes the same station, pinned
+  by a state-sequence scan), and a **live-Rothermel doctrine test** (parity with 4a:
+  the station stays `Unburned` while the tank has water, yet the front flanks past
+  the finite footprint). Full suite green; determinism golden untouched.
 
 ## 4c — Aerial (drops + retardant, the crown-fire lesson) — *sketch*
 
@@ -262,7 +286,12 @@ determinism test untouched (the golden uses seed terrain that never paints id 4)
    the browser command shell is typechecked + built but its click→order path has not
    been driven interactively).
 2. **4b** — engines: finite water, water-drawing direct attack, reload cycle.
-   **Exit:** an engine holds an edge, runs dry, reloads, resumes.
+   **Exit:** an engine holds an edge, runs dry, reloads, resumes. **✅ DONE.**
+   `src/sim/engine.ts` (`Engine`, `agentType='engine'`) on the shared
+   `src/sim/suppressionTravel.ts` substrate; wired in `main.ts` + `renderFrame.ts`;
+   `tests/engine.test.ts` pins the four-verb reload cycle. The command shell's
+   "Engine attack" tool + water gauge are typechecked + built but, like 4a's shell,
+   not driven interactively.
 3. **4c** — aerial: drops + the `retardant` layer decision + the crown-fire
    effectiveness falloff, pinned by a test. **Exit:** retardant persists past a
    water drop's drydown; a drop on a high-intensity crown fire is shown near-useless.

@@ -7,6 +7,7 @@ import { FuelMoistureSystem } from './sim/fuelMoistureSystem';
 import { RothermelFireModel } from './sim/rothermelFireModel';
 import { SpottingSystem } from './sim/spottingSystem';
 import { GroundCrew } from './sim/groundCrew';
+import { Engine } from './sim/engine';
 import { CanvasRenderer } from './render/canvasRenderer';
 import { TerrainEditor } from './editor/terrainEditor';
 import { SuppressionCommand } from './editor/suppressionCommand';
@@ -63,13 +64,21 @@ const fire = new RothermelFireModel(fuel);
 // progress. Player orders come from the browser command shell below (deterministic
 // execution, non-deterministic commanding — outside the determinism test).
 const crew = new GroundCrew(fuel, { x: WIDTH >> 1, y: (HEIGHT >> 1) + 24 });
+// Phase 4 (4b): a player-commanded engine — the crew's travel/work substrate plus a
+// FINITE water tank. Direct attack lays a wider, wetter knockdown than the hand
+// crew but draws the tank down; when dry it drives to a static refill point, tops
+// up, and resumes the same station (the §4.4 reload cycle). Same suppression band
+// as the crew (weather → moisture → SUPPRESSION → fire → spotting), layer-only —
+// its only world write is a `moisture` spike on unburned fuel. Refill point defaults
+// to its spawn cell (a staging area west of the ignition).
+const engine = new Engine({ x: (WIDTH >> 1) - 40, y: (HEIGHT >> 1) + 24 });
 // Phase 3: spotting. Burning cells throw embers downwind that jump ahead of the
 // front (and across firebreaks). Ordered AFTER the fire model — it is an additive
 // co-writer of the `fire` layer, layering ember ignitions on top of surface
 // spread (see SpottingSystem for the contract). Reads the same fuel catalogue for
 // landing-cell reception; talks only through layers (Handoff §3.1).
 const spotting = new SpottingSystem(fuel);
-const sim = new Simulation(world, [weather, moisture, crew, fire, spotting]);
+const sim = new Simulation(world, [weather, moisture, crew, engine, fire, spotting]);
 
 // Rendering reads world state but never drives the sim.
 const canvas = document.getElementById('view') as HTMLCanvasElement;
@@ -84,7 +93,7 @@ const editor = new TerrainEditor(canvas, world);
 // direct attack). Browser-only, like the editor; it enqueues orders and draws the
 // crew marker — it never writes world state itself. Shares the canvas with the
 // editor via capture-phase pointer handling (see SuppressionCommand).
-const command = new SuppressionCommand(canvas, world, crew);
+const command = new SuppressionCommand(canvas, world, crew, engine);
 
 function frame(): void {
   if (!editor.paused) {

@@ -20,6 +20,7 @@ import { FuelMoistureSystem } from '../src/sim/fuelMoistureSystem';
 import { RothermelFireModel } from '../src/sim/rothermelFireModel';
 import { SpottingSystem } from '../src/sim/spottingSystem';
 import { GroundCrew } from '../src/sim/groundCrew';
+import { Engine } from '../src/sim/engine';
 import { cellRGB, type Rgb } from '../src/render/palette';
 
 const CRC_TABLE: Uint32Array = (() => {
@@ -104,6 +105,20 @@ const LINE_Y0 = (HEIGHT >> 1) - 40;
 const crew = new GroundCrew(crewFuel, { x: LINE_X, y: LINE_Y0 });
 for (let y = LINE_Y0; y < LINE_Y0 + 80; y++) crew.orderCutLine(LINE_X, y);
 
+// Phase-4 4b: an engine holding a station on the fire's southern flank with its
+// finite tank, refilling from a staging point to the west — so the 2000-step run
+// exercises the whole reload cycle in the real pipeline (weather → moisture →
+// suppression → fire → spotting). Its wet knockdown leaves an unburned notch in the
+// scar; while it is off refilling, the notch dries and the front creeps back — honest
+// headless evidence the tank is finite.
+const engine = new Engine({
+  x: (WIDTH >> 1) + 8,
+  y: (HEIGHT >> 1) + 30,
+  refillX: (WIDTH >> 1) - 60,
+  refillY: (HEIGHT >> 1) + 30,
+});
+engine.orderDirectAttack((WIDTH >> 1) + 8, (HEIGHT >> 1) + 30);
+
 const sim = new Simulation(world, [
   // Same dynamic wind as main.ts: shifts NE → N → NW over 30 sim-minutes, gusty.
   new DynamicWeatherProvider(
@@ -118,6 +133,7 @@ const sim = new Simulation(world, [
   // Suppression sits after moisture, before fire (weather → moisture → suppression
   // → fire → spotting) so a same-tick line/backburn is honoured by the fire model.
   crew,
+  engine,
   new RothermelFireModel(new TerrainFuelModel()),
   // Spotting runs after the fire model (additive `fire`-layer co-writer).
   new SpottingSystem(new TerrainFuelModel()),

@@ -1,5 +1,6 @@
 import type { WorldState } from '../core/world';
 import type { GroundCrew } from '../sim/groundCrew';
+import type { Engine } from '../sim/engine';
 import { forEachStrokeCell } from './brush';
 
 /**
@@ -17,6 +18,10 @@ import { forEachStrokeCell } from './brush';
  * single-click orders. Direct attack is *held* (the crew re-wets its footprint each
  * tick) until Stand down or another order replaces it.
  *
+ * The 4b **Engine** tool (present when an engine is wired) is a single-click held
+ * station too, but the engine draws a wider, wetter knockdown from a FINITE tank
+ * and auto-refills when dry. A small gauge in the panel reads its remaining water.
+ *
  * **Coexistence with the terrain editor.** Both attach to the same canvas. When a
  * suppression tool is armed (anything but "Off") this shell handles the pointer in
  * the *capture* phase and stops it there, so the editor's brush does not also fire;
@@ -24,13 +29,14 @@ import { forEachStrokeCell } from './brush';
  * authoring and fire command on one canvas without a modal split.
  */
 
-type CmdTool = 'off' | 'line' | 'backburn' | 'direct';
+type CmdTool = 'off' | 'line' | 'backburn' | 'direct' | 'engine';
 
 const TOOLS: ReadonlyArray<{ id: CmdTool; label: string }> = [
   { id: 'off', label: 'Off (terrain)' },
   { id: 'line', label: 'Cut line' },
   { id: 'backburn', label: 'Backburn' },
   { id: 'direct', label: 'Direct attack' },
+  { id: 'engine', label: 'Engine attack' },
 ];
 
 export class SuppressionCommand {
@@ -42,10 +48,14 @@ export class SuppressionCommand {
   /** Cells already ordered this stroke — a drag revisits cells; don't flood the queue. */
   private readonly strokeSeen = new Set<number>();
 
+  /** Gauge element updated each frame with the engine's remaining water. */
+  private waterGauge: HTMLElement | null = null;
+
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly world: WorldState,
     private readonly crew: GroundCrew,
+    private readonly engine?: Engine,
   ) {
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('2D canvas context unavailable');
@@ -90,6 +100,9 @@ export class SuppressionCommand {
     else if (this.tool === 'direct') {
       this.crew.standDown(); // a fresh held station replaces prior orders
       this.crew.orderDirectAttack(c.x, c.y);
+    } else if (this.tool === 'engine') {
+      // orderDirectAttack already replaces any prior engine station (holds one edge).
+      this.engine?.orderDirectAttack(c.x, c.y);
     }
     this.last = c;
   };
@@ -138,6 +151,27 @@ export class SuppressionCommand {
     // The crew itself — a bright dot so it reads against fire and terrain alike.
     dot(ctx, this.crew.cellX, this.crew.cellY, 2, '#eaf6ff');
     dot(ctx, this.crew.cellX, this.crew.cellY, 1, '#1a6cff');
+
+    // The engine — a distinct green marker, dimmed while it has broken off to refill.
+    if (this.engine) {
+      const eng = this.engine;
+      const et = eng.targetCell;
+      if (et) {
+        ctx.strokeStyle = eng.isRefilling ? 'rgba(120,120,140,0.6)' : 'rgba(90,230,150,0.7)';
+        ctx.lineWidth = 0.6;
+        ctx.beginPath();
+        ctx.moveTo(eng.cellX + 0.5, eng.cellY + 0.5);
+        ctx.lineTo(et.x + 0.5, et.y + 0.5);
+        ctx.stroke();
+        dot(ctx, et.x, et.y, 1.2, eng.isRefilling ? 'rgba(120,120,140,0.9)' : 'rgba(90,230,150,0.9)');
+      }
+      dot(ctx, eng.cellX, eng.cellY, 2, '#eafff2');
+      dot(ctx, eng.cellX, eng.cellY, 1, eng.isRefilling ? '#8a8aa0' : '#12b866');
+      if (this.waterGauge) {
+        const pct = Math.round(eng.waterFraction * 100);
+        this.waterGauge.textContent = `Engine water: ${pct}%${eng.isRefilling ? ' (refilling…)' : ''}`;
+      }
+    }
   }
 
   // --- toolbar (DOM) --------------------------------------------------------
@@ -187,8 +221,19 @@ export class SuppressionCommand {
     const stand = document.createElement('button');
     stand.textContent = 'Stand down';
     Object.assign(stand.style, { ...buttonStyle, alignSelf: 'flex-start' });
-    stand.addEventListener('click', () => this.crew.standDown());
+    stand.addEventListener('click', () => {
+      this.crew.standDown();
+      this.engine?.standDown();
+    });
     panel.appendChild(stand);
+
+    if (this.engine) {
+      const gauge = document.createElement('div');
+      gauge.textContent = 'Engine water: 100%';
+      Object.assign(gauge.style, { color: '#9be8c0', fontVariantNumeric: 'tabular-nums' });
+      panel.appendChild(gauge);
+      this.waterGauge = gauge;
+    }
 
     document.body.appendChild(panel);
   }
