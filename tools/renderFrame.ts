@@ -3,6 +3,7 @@
  * shared palette the canvas renderer uses. This mirrors `main.ts`'s pipeline
  * (terrain gen -> uniform weather -> Rothermel ROS fire -> colour mapping)
  * without a browser, so the output is honest evidence of what the sandbox draws.
+ * Includes the Phase-3 fuel-moisture system (weather -> moisture -> fire).
  *
  * Run: npx vite-node tools/renderFrame.ts
  */
@@ -13,6 +14,7 @@ import { Simulation } from '../src/core/simulation';
 import { generateTerrain, igniteNearestBurnable } from '../src/gen/terrain';
 import { TerrainFuelModel } from '../src/sim/terrainFuelModel';
 import { UniformWeatherProvider } from '../src/sim/uniformWeather';
+import { FuelMoistureSystem } from '../src/sim/fuelMoistureSystem';
 import { RothermelFireModel } from '../src/sim/rothermelFireModel';
 import { cellRGB, type Rgb } from '../src/render/palette';
 
@@ -90,7 +92,8 @@ generateTerrain(world);
 igniteNearestBurnable(world, WIDTH >> 1, HEIGHT >> 1);
 
 const sim = new Simulation(world, [
-  new UniformWeatherProvider(1.5, 0.6),
+  new UniformWeatherProvider(1.5, 0.6, { temperatureC: 30, relativeHumidity: 20, rainRate: 0 }),
+  new FuelMoistureSystem(),
   new RothermelFireModel(new TerrainFuelModel()),
 ]);
 sim.run(STEPS, 1);

@@ -3,6 +3,7 @@ import { Simulation } from './core/simulation';
 import { generateTerrain, igniteNearestBurnable } from './gen/terrain';
 import { TerrainFuelModel } from './sim/terrainFuelModel';
 import { UniformWeatherProvider } from './sim/uniformWeather';
+import { FuelMoistureSystem } from './sim/fuelMoistureSystem';
 import { RothermelFireModel } from './sim/rothermelFireModel';
 import { CanvasRenderer } from './render/canvasRenderer';
 import { TerrainEditor } from './editor/terrainEditor';
@@ -26,10 +27,19 @@ igniteNearestBurnable(world, WIDTH >> 1, HEIGHT >> 1);
 // no longer mis-served as tall grass. `CaFireModel`/`BasicFuelModel` remain in the
 // tree as the Phase-1 reference (and back the determinism test).
 const fuel = new TerrainFuelModel();
-// Wind vector read by the Rothermel model as midflame wind in m/s (plan §D3).
-const weather = new UniformWeatherProvider(1.5, 0.6); // ≈ 1.6 m/s toward +x/+y
+// Wind vector read by the Rothermel model as midflame wind in m/s (plan §D3); the
+// ambient drivers feed the Phase-3 fuel-moisture dynamics (dry, no rain by default).
+const weather = new UniformWeatherProvider(1.5, 0.6, {
+  temperatureC: 30,
+  relativeHumidity: 20,
+  rainRate: 0,
+});
+// Phase 3: dead-fuel moisture evolves toward EMC each tick. Ordered weather →
+// moisture → fire so the fire model reads the freshly-updated moisture. Writes the
+// moisture layer only; systems talk through layers (Handoff §3.1).
+const moisture = new FuelMoistureSystem();
 const fire = new RothermelFireModel(fuel);
-const sim = new Simulation(world, [weather, fire]);
+const sim = new Simulation(world, [weather, moisture, fire]);
 
 // Rendering reads world state but never drives the sim.
 const canvas = document.getElementById('view') as HTMLCanvasElement;

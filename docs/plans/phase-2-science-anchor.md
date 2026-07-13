@@ -196,9 +196,12 @@ cheap; label honestly:
    `rothermel` use single-class FM1/grass; determinism uses the CA path), but the
    demo Brush/Timber fronts are now slower and correct. `terrain.ts` moisture tuning
    unchanged.
-3. **Static moisture → drying/wetting dynamics** — Phase 3, additive. A new
-   system *writes* the byte layer over time from weather; the Step-3 encoding is
-   read unchanged. See `docs/plans/phase-3-moisture-dynamics.md`.
+3. ✅ **Static moisture → drying/wetting dynamics** — *DONE* (Phase-3 first step).
+   `src/sim/fuelMoistureSystem.ts` writes the byte layer each tick: fine dead fuel
+   relaxes toward the Simard-1968 EMC (`src/sim/emc.ts`) with a 1-hr timelag, and
+   wets toward saturation under rain. Drivers come from a new `WorldState.env`
+   scalar block written by `IWeatherProvider`. The Step-3 encoding is read
+   unchanged; determinism preserved. See `docs/plans/phase-3-moisture-dynamics.md`.
 
 ## Determinism (the hard constraint)
 

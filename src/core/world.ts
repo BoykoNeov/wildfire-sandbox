@@ -35,8 +35,25 @@ export interface Layers {
 }
 
 /**
+ * Spatially-uniform weather drivers, written by `IWeatherProvider`, read by the
+ * fuel-moisture system (Phase 3). Mutable fields like {@link SimClock} — a plain
+ * data record, not a system. These are *ambient scalars* (one value for the whole
+ * map); genuinely per-cell fields (like wind) live in {@link Layers}. Should
+ * temperature/humidity ever need to vary spatially they promote to layers exactly
+ * as wind already is — no reader changes, same as the Handoff §3.1 seam discipline.
+ */
+export interface WeatherState {
+  /** Air temperature, °C. Drives the dead-fuel EMC target (converted to °F). */
+  temperatureC: number;
+  /** Relative humidity, percent 0..100. Drives the EMC target. */
+  relativeHumidity: number;
+  /** Precipitation rate, mm/hr. `> 0` wets fuels toward saturation instead of EMC. */
+  rainRate: number;
+}
+
+/**
  * The shared world state: plain data only, no behavior (Handoff §3.1).
- * Layers + entities + clock + the seeded RNG.
+ * Layers + entities + clock + the seeded RNG + ambient weather.
  */
 export interface WorldState {
   readonly width: number;
@@ -46,6 +63,8 @@ export interface WorldState {
   readonly clock: SimClock;
   readonly rng: Rng;
   readonly layers: Layers;
+  /** Ambient weather drivers (uniform); written by IWeatherProvider, read by moisture. */
+  readonly env: WeatherState;
   /** Unifying IgnitableEntity list (structures, vessels) — empty in Phase 1. */
   readonly entities: IgnitableEntity[];
 }
@@ -78,6 +97,9 @@ export function createWorld(opts: WorldOptions): WorldState {
     clock: createClock(),
     rng: new Rng(seed),
     layers,
+    // Mild-fire-weather defaults (25 °C / 40% RH / no rain) so a sim wired without
+    // a weather provider still reads defined drivers. A provider overwrites these.
+    env: { temperatureC: 25, relativeHumidity: 40, rainRate: 0 },
     entities: [],
   };
 }
