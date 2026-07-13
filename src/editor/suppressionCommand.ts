@@ -1,6 +1,7 @@
 import type { WorldState } from '../core/world';
 import type { GroundCrew } from '../sim/groundCrew';
 import type { Engine } from '../sim/engine';
+import type { Aircraft } from '../sim/aircraft';
 import { forEachStrokeCell } from './brush';
 
 /**
@@ -22,6 +23,12 @@ import { forEachStrokeCell } from './brush';
  * station too, but the engine draws a wider, wetter knockdown from a FINITE tank
  * and auto-refills when dry. A small gauge in the panel reads its remaining water.
  *
+ * The 4c **Water drop** / **Retardant drop** tools (present when an aircraft is wired)
+ * are single-click *sorties*: the tanker flies out, lays one wide drop on the clicked
+ * cell, and returns to base to reload. Water is a big temporary knockdown; retardant is
+ * a persistent rust-red pre-treatment. A drop on a flaming timber crown is near-useless
+ * (the crown-fire falloff) — pre-treat unburned fuel *ahead* of the front instead.
+ *
  * **Coexistence with the terrain editor.** Both attach to the same canvas. When a
  * suppression tool is armed (anything but "Off") this shell handles the pointer in
  * the *capture* phase and stops it there, so the editor's brush does not also fire;
@@ -29,7 +36,7 @@ import { forEachStrokeCell } from './brush';
  * authoring and fire command on one canvas without a modal split.
  */
 
-type CmdTool = 'off' | 'line' | 'backburn' | 'direct' | 'engine';
+type CmdTool = 'off' | 'line' | 'backburn' | 'direct' | 'engine' | 'water' | 'retardant';
 
 const TOOLS: ReadonlyArray<{ id: CmdTool; label: string }> = [
   { id: 'off', label: 'Off (terrain)' },
@@ -37,6 +44,8 @@ const TOOLS: ReadonlyArray<{ id: CmdTool; label: string }> = [
   { id: 'backburn', label: 'Backburn' },
   { id: 'direct', label: 'Direct attack' },
   { id: 'engine', label: 'Engine attack' },
+  { id: 'water', label: 'Water drop' },
+  { id: 'retardant', label: 'Retardant drop' },
 ];
 
 export class SuppressionCommand {
@@ -56,6 +65,7 @@ export class SuppressionCommand {
     private readonly world: WorldState,
     private readonly crew: GroundCrew,
     private readonly engine?: Engine,
+    private readonly aircraft?: Aircraft,
   ) {
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('2D canvas context unavailable');
@@ -103,6 +113,10 @@ export class SuppressionCommand {
     } else if (this.tool === 'engine') {
       // orderDirectAttack already replaces any prior engine station (holds one edge).
       this.engine?.orderDirectAttack(c.x, c.y);
+    } else if (this.tool === 'water') {
+      this.aircraft?.orderWaterDrop(c.x, c.y);
+    } else if (this.tool === 'retardant') {
+      this.aircraft?.orderRetardantDrop(c.x, c.y);
     }
     this.last = c;
   };
@@ -172,6 +186,24 @@ export class SuppressionCommand {
         this.waterGauge.textContent = `Engine water: ${pct}%${eng.isRefilling ? ' (refilling…)' : ''}`;
       }
     }
+
+    // The air tanker — a rust-red marker (its slurry colour), dimmed while returning
+    // to base to reload; a line to its current drop target or home leg.
+    if (this.aircraft) {
+      const air = this.aircraft;
+      const at = air.targetCell;
+      if (at) {
+        ctx.strokeStyle = air.isReturning ? 'rgba(120,120,140,0.6)' : 'rgba(230,110,80,0.7)';
+        ctx.lineWidth = 0.6;
+        ctx.beginPath();
+        ctx.moveTo(air.cellX + 0.5, air.cellY + 0.5);
+        ctx.lineTo(at.x + 0.5, at.y + 0.5);
+        ctx.stroke();
+        dot(ctx, at.x, at.y, 1.2, air.isReturning ? 'rgba(120,120,140,0.9)' : 'rgba(230,110,80,0.9)');
+      }
+      dot(ctx, air.cellX, air.cellY, 2, '#ffe8e0');
+      dot(ctx, air.cellX, air.cellY, 1, air.isReturning ? '#8a8aa0' : '#e0562d');
+    }
   }
 
   // --- toolbar (DOM) --------------------------------------------------------
@@ -224,6 +256,7 @@ export class SuppressionCommand {
     stand.addEventListener('click', () => {
       this.crew.standDown();
       this.engine?.standDown();
+      this.aircraft?.standDown();
     });
     panel.appendChild(stand);
 

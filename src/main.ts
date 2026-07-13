@@ -8,6 +8,8 @@ import { RothermelFireModel } from './sim/rothermelFireModel';
 import { SpottingSystem } from './sim/spottingSystem';
 import { GroundCrew } from './sim/groundCrew';
 import { Engine } from './sim/engine';
+import { Aircraft } from './sim/aircraft';
+import { RetardantSystem } from './sim/retardantSystem';
 import { CanvasRenderer } from './render/canvasRenderer';
 import { TerrainEditor } from './editor/terrainEditor';
 import { SuppressionCommand } from './editor/suppressionCommand';
@@ -72,13 +74,38 @@ const crew = new GroundCrew(fuel, { x: WIDTH >> 1, y: (HEIGHT >> 1) + 24 });
 // its only world write is a `moisture` spike on unburned fuel. Refill point defaults
 // to its spawn cell (a staging area west of the ignition).
 const engine = new Engine({ x: (WIDTH >> 1) - 40, y: (HEIGHT >> 1) + 24 });
+// Phase 4 (4c): a player-commanded air tanker — the shared travel substrate (flying,
+// so terrain-independent) plus discrete passes: fly out, lay one drop over a wide
+// footprint, return to base, reload. Two loads: WATER (a big, temporary moisture
+// knockdown) and RETARDANT (a persistent pre-treatment written to the `retardant`
+// layer). Effectiveness falls off on an active crown run (canopy × flaming activity),
+// the §4.4 lesson: a drop on a flaming timber crown is near-useless. Same suppression
+// band, layer-only. Its base (reload point) is a staging strip north-west of the fire.
+const aircraft = new Aircraft({ x: (WIDTH >> 1) - 40, y: (HEIGHT >> 1) - 40 });
+// Phase 4 (4c): the retardant persistence substrate. Owns the `retardant` layer — a
+// plain System, not a model seam — decaying each treated cell on retardant's own slow
+// schedule and re-pinning `moisture` from it every tick for the whole duration (long
+// after the aircraft has flown home). The fire model is never told about retardant; it
+// only ever reads `moisture`, so the layer-only spine holds. Ordered in the suppression
+// band AFTER the aircraft (honour a same-tick drop) and after moisture (override this
+// tick's drydown), before fire.
+const retardantField = new RetardantSystem();
 // Phase 3: spotting. Burning cells throw embers downwind that jump ahead of the
 // front (and across firebreaks). Ordered AFTER the fire model — it is an additive
 // co-writer of the `fire` layer, layering ember ignitions on top of surface
 // spread (see SpottingSystem for the contract). Reads the same fuel catalogue for
 // landing-cell reception; talks only through layers (Handoff §3.1).
 const spotting = new SpottingSystem(fuel);
-const sim = new Simulation(world, [weather, moisture, crew, engine, fire, spotting]);
+const sim = new Simulation(world, [
+  weather,
+  moisture,
+  crew,
+  engine,
+  aircraft,
+  retardantField,
+  fire,
+  spotting,
+]);
 
 // Rendering reads world state but never drives the sim.
 const canvas = document.getElementById('view') as HTMLCanvasElement;
@@ -93,7 +120,7 @@ const editor = new TerrainEditor(canvas, world);
 // direct attack). Browser-only, like the editor; it enqueues orders and draws the
 // crew marker — it never writes world state itself. Shares the canvas with the
 // editor via capture-phase pointer handling (see SuppressionCommand).
-const command = new SuppressionCommand(canvas, world, crew, engine);
+const command = new SuppressionCommand(canvas, world, crew, engine, aircraft);
 
 function frame(): void {
   if (!editor.paused) {

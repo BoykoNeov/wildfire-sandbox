@@ -187,25 +187,52 @@ determinism test untouched (the golden uses seed terrain that never paints id 4)
   the station stays `Unburned` while the tank has water, yet the front flanks past
   the finite footprint). Full suite green; determinism golden untouched.
 
-## 4c — Aerial (drops + retardant, the crown-fire lesson) — *sketch*
+## 4c — Aerial (drops + retardant, the crown-fire lesson) — **✅ DONE (2026-07-13)**
 
-- `Aircraft implements ISuppressionAgent`, `agentType = 'air-tanker'` /
-  `'helicopter'`. Long travel legs, big reload cycles (return to base/dip site).
-- **Water drop** = a large area `moisture` spike (same mechanism as engine water,
-  bigger footprint, short-lived after drydown).
-- **Retardant = the one genuine new-layer question.** It is chemical, so it must
-  persist **longer** than water and **resist the EMC drydown** that
-  `FuelMoistureSystem` applies to the moisture layer. One moisture layer with one
-  decay law can't give some cells a slow decay. So retardant likely wants a
-  **dedicated `retardant` layer** (a persistent ROS-suppressor the fire model
-  reads, decaying on its own slow schedule), pre-treating **unburned fuel ahead of
-  the front** for a duration — it does **not** extinguish flames directly (§4.4).
-  **This layer decision is deferred to 4c**; 4a and 4b need zero new layers.
-- **The crown-fire constraint (§4.4).** Effectiveness must fall off sharply with
-  fireline intensity / canopy — a drop on a high-intensity timber crown fire is
-  **nearly useless**. This is the phase's signature teaching moment; wire it as an
-  intensity/canopy-gated cap on the moisture/retardant effect, and pin it with a
-  test.
+- `Aircraft implements ISuppressionAgent`, `agentType = 'air-tanker'` (`src/sim/aircraft.ts`).
+  Flies the shared `suppressionTravel` substrate with resistance 1 everywhere (terrain-
+  independent) and makes discrete **sorties**: fly out → lay one drop over a wide (7×7)
+  footprint → return to base → reload (a long §4.4 turnaround) → ready. One drop per pass.
+- **Water drop** = a large `moisture` spike on unburned fuel (engine mechanism, bigger
+  footprint), temporary — it rides the shared slow drydown.
+- **The retardant layer decision (resolved — a deliberate divergence from the sketch's
+  "fire model reads it" option B).** Retardant needs its **own** decay law: one moisture
+  layer with one drydown can't also give some cells a *slower* decay, so a **dedicated
+  `retardant` layer** was added (`world.ts`). But rather than have the fire model read it
+  (spread-math surgery on the mounted model — the thing the whole phase avoids),
+  **`RetardantSystem`** (`src/sim/retardantSystem.ts`, a plain System, not a seam) owns
+  the layer: each tick it decays every treated cell on retardant's own slow schedule
+  (default 4 h) and **re-pins `moisture`** from it (pin ∝ potency), in the suppression
+  band after the aircraft + moisture, before fire. The fire model is **never told about
+  retardant** — it still reads only `moisture` — so the layer-only spine holds, and
+  spotting's moisture-gated landing check makes retardant lines resist embers for free.
+  Retardant is honestly "water that lasts": same ROS effect while active, distinguished
+  by **persistence**. The layer stays all-zero without a drop, so the determinism golden
+  (which compares only `fire`+`elevation`) is untouched.
+- **The crown-fire constraint (§4.4) — gated on canopy × *flaming activity*, not canopy
+  alone.** `crownFalloffEffectiveness(localCrown)` where `localCrown` = the canopy
+  fraction of the most intense **actively flaming** cell in the drop cell's 3×3. A drop
+  on unburned timber *well ahead* of the front (no flaming neighbour) lands full strength
+  (that indirect pre-treatment is the doctrine); a drop on a flaming timber crown
+  (canopy 0.78 → effectiveness ≈ 0.14 → deposit 0.9·0.14 ≈ 0.13, **below** timber's 0.25
+  extinction moisture) is near-useless. Gating on canopy alone was rejected (advisor):
+  it would make pre-treating unburned timber ahead read as useless too, teaching the
+  wrong thing. Falloff scales the deposited potency, so it carries through the moisture
+  re-pin. Applied at the aircraft (layer-only) — the fire model is not involved.
+- Wired `main.ts` + `renderFrame.ts` (band `weather → moisture → crew → engine →
+  aircraft → retardant → fire → spotting`), a rust-red slurry tint in the palette
+  (alpha ∝ potency, so a line fades as it decays), and Water/Retardant drop tools +
+  an air-tanker marker in the command shell (typechecked/built, not driven
+  interactively — same caveat as 4a/4b). `npm run frame` draws a slurry square.
+- Tests: **`tests/aircraft.test.ts`** (9) — the pure falloff (full ahead / near-useless
+  on a flaming crown, its deposit below extinction / grass fire still suppressible), a
+  **live-Rothermel behavioural falloff** (a full band *ahead* halts the front; a drop
+  *on the flaming crown* barely dents it vs a no-drop control), the sortie + reload
+  cycle (fly → drop once → RTB → reload → ready; a second sortie waits for reload), a
+  layer-only guard (the drop never touches `fire`), and the **retardant-outlasts-water**
+  persistence (after ~100 min the water cell has dried below extinction while retardant
+  holds above it; once the timer expires the cell is released and dries). Full suite 146
+  green; determinism golden untouched.
 
 ---
 
@@ -295,6 +322,11 @@ determinism test untouched (the golden uses seed terrain that never paints id 4)
 3. **4c** — aerial: drops + the `retardant` layer decision + the crown-fire
    effectiveness falloff, pinned by a test. **Exit:** retardant persists past a
    water drop's drydown; a drop on a high-intensity crown fire is shown near-useless.
+   **✅ DONE.** `src/sim/aircraft.ts` (`Aircraft`, `agentType='air-tanker'`) +
+   `src/sim/retardantSystem.ts` (dedicated `retardant` layer, re-pins `moisture`, fire
+   model untouched) + the canopy×flaming-activity falloff; `tests/aircraft.test.ts`
+   pins both exit criteria. Wired in `main.ts` + `renderFrame.ts`; slurry palette tint;
+   command-shell drop tools (not driven interactively, same caveat as 4a/4b).
 
 With 4a–4c landed, **Phase 4 is complete**; next up the roadmap is **Phase 5 —
 polish** (UI, scenarios, stats overlays, save/load), then the additive future

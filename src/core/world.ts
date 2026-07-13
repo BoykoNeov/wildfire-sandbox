@@ -20,6 +20,19 @@ export interface Layers {
   moisture: Layer<Uint8Array>;
   /** Canopy bulk-density proxy, 0..255 — for crown-fire coupling (Handoff §2.1). */
   canopy: Layer<Uint8Array>;
+  /**
+   * Aerial fire-retardant (slurry) potency per cell, 0..255 (Phase-4 4c). Written
+   * by an aerial drop ({@link Aircraft}); decayed on its own slow schedule and
+   * re-pinned into `moisture` each tick by {@link RetardantSystem}. It is a
+   * **separate layer from `moisture` on purpose**: retardant must persist *longer*
+   * than a water drop, and one moisture layer with one drydown law cannot give some
+   * cells a slower decay (plan §4c). The **fire model never reads this layer** —
+   * retardant acts only by holding `moisture` high on treated *unburned* fuel, so
+   * the mounted fire model's spread math stays untouched (the Phase-4 layer-only
+   * spine). Stays all-zero in any run without an aerial drop (e.g. the determinism
+   * golden's CA pipeline), so adding it is fully additive.
+   */
+  retardant: Layer<Uint8Array>;
   /** Fire state per cell (see FireState). */
   fire: Layer<Uint8Array>;
   /** Seconds a cell has been burning — drives burnout. */
@@ -93,6 +106,7 @@ export function createWorld(opts: WorldOptions): WorldState {
     fuel: uint8Layer(width, height),
     moisture: uint8Layer(width, height),
     canopy: uint8Layer(width, height),
+    retardant: uint8Layer(width, height),
     fire: uint8Layer(width, height),
     burnElapsed: float32Layer(width, height),
     windU: float32Layer(width, height),

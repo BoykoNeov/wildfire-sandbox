@@ -21,6 +21,8 @@ import { RothermelFireModel } from '../src/sim/rothermelFireModel';
 import { SpottingSystem } from '../src/sim/spottingSystem';
 import { GroundCrew } from '../src/sim/groundCrew';
 import { Engine } from '../src/sim/engine';
+import { Aircraft } from '../src/sim/aircraft';
+import { RetardantSystem } from '../src/sim/retardantSystem';
 import { cellRGB, type Rgb } from '../src/render/palette';
 
 const CRC_TABLE: Uint32Array = (() => {
@@ -119,6 +121,16 @@ const engine = new Engine({
 });
 engine.orderDirectAttack((WIDTH >> 1) + 8, (HEIGHT >> 1) + 30);
 
+// Phase-4 4c: an air tanker lays a retardant drop north-east of the ignition — a
+// persistent rust-red pre-treatment on unburned fuel. This is a SMOKE CHECK: it shows
+// the `retardant` layer renders (a slurry square, fading as RetardantSystem decays it)
+// in the real pipeline. The hold/flank/crown-falloff *behaviour* is pinned headlessly
+// by `tests/aircraft.test.ts`, not by this frame. Based at a strip north-west of the
+// fire, it flies out once, drops, and returns to reload.
+const aircraft = new Aircraft({ x: (WIDTH >> 1) - 60, y: (HEIGHT >> 1) - 60 });
+aircraft.orderRetardantDrop((WIDTH >> 1) + 30, (HEIGHT >> 1) - 24);
+const retardantField = new RetardantSystem();
+
 const sim = new Simulation(world, [
   // Same dynamic wind as main.ts: shifts NE → N → NW over 30 sim-minutes, gusty.
   new DynamicWeatherProvider(
@@ -134,6 +146,8 @@ const sim = new Simulation(world, [
   // → fire → spotting) so a same-tick line/backburn is honoured by the fire model.
   crew,
   engine,
+  aircraft,
+  retardantField,
   new RothermelFireModel(new TerrainFuelModel()),
   // Spotting runs after the fire model (additive `fire`-layer co-writer).
   new SpottingSystem(new TerrainFuelModel()),
