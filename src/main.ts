@@ -6,8 +6,10 @@ import { DynamicWeatherProvider } from './sim/dynamicWeather';
 import { FuelMoistureSystem } from './sim/fuelMoistureSystem';
 import { RothermelFireModel } from './sim/rothermelFireModel';
 import { SpottingSystem } from './sim/spottingSystem';
+import { GroundCrew } from './sim/groundCrew';
 import { CanvasRenderer } from './render/canvasRenderer';
 import { TerrainEditor } from './editor/terrainEditor';
+import { SuppressionCommand } from './editor/suppressionCommand';
 
 const WIDTH = 256;
 const HEIGHT = 256;
@@ -53,13 +55,21 @@ const weather = new DynamicWeatherProvider(
 // moisture layer only; systems talk through layers (Handoff §3.1).
 const moisture = new FuelMoistureSystem();
 const fire = new RothermelFireModel(fuel);
+// Phase 4 (4a): a player-commanded ground crew. Ordered weather → moisture →
+// SUPPRESSION → fire → spotting (load-bearing, per each agent's header): a
+// knockdown must land in the moisture layer after the drydown step and before the
+// fire model reads it this tick, and a backburn must ignite in time to spread this
+// tick. Layer-only, like spotting — it never touches the fire model's private
+// progress. Player orders come from the browser command shell below (deterministic
+// execution, non-deterministic commanding — outside the determinism test).
+const crew = new GroundCrew(fuel, { x: WIDTH >> 1, y: (HEIGHT >> 1) + 24 });
 // Phase 3: spotting. Burning cells throw embers downwind that jump ahead of the
 // front (and across firebreaks). Ordered AFTER the fire model — it is an additive
 // co-writer of the `fire` layer, layering ember ignitions on top of surface
 // spread (see SpottingSystem for the contract). Reads the same fuel catalogue for
 // landing-cell reception; talks only through layers (Handoff §3.1).
 const spotting = new SpottingSystem(fuel);
-const sim = new Simulation(world, [weather, moisture, fire, spotting]);
+const sim = new Simulation(world, [weather, moisture, crew, fire, spotting]);
 
 // Rendering reads world state but never drives the sim.
 const canvas = document.getElementById('view') as HTMLCanvasElement;
@@ -70,12 +80,20 @@ const renderer = new CanvasRenderer(canvas, world);
 // you can author terrain without the front advancing.
 const editor = new TerrainEditor(canvas, world);
 
+// Phase-4 command shell: click/drag issues orders to the crew (cut line, backburn,
+// direct attack). Browser-only, like the editor; it enqueues orders and draws the
+// crew marker — it never writes world state itself. Shares the canvas with the
+// editor via capture-phase pointer handling (see SuppressionCommand).
+const command = new SuppressionCommand(canvas, world, crew);
+
 function frame(): void {
   if (!editor.paused) {
     for (let i = 0; i < STEPS_PER_FRAME; i++) sim.step(DT);
   }
   // Always render, even when paused, so brush strokes appear immediately.
   renderer.render(world);
+  // Overlay the crew marker on top of the freshly-drawn frame.
+  command.render();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

@@ -3,8 +3,9 @@
  * shared palette the canvas renderer uses. This mirrors `main.ts`'s pipeline
  * (terrain gen -> uniform weather -> Rothermel ROS fire -> colour mapping)
  * without a browser, so the output is honest evidence of what the sandbox draws.
- * Includes the Phase-3 fuel-moisture system, dynamic (shifting, gusty) wind, and
- * spotting (weather -> moisture -> fire -> spotting).
+ * Includes the Phase-3 fuel-moisture system, dynamic (shifting, gusty) wind,
+ * spotting, and a Phase-4 ground crew cutting a containment line
+ * (weather -> moisture -> suppression -> fire -> spotting).
  *
  * Run: npx vite-node tools/renderFrame.ts
  */
@@ -18,6 +19,7 @@ import { DynamicWeatherProvider } from '../src/sim/dynamicWeather';
 import { FuelMoistureSystem } from '../src/sim/fuelMoistureSystem';
 import { RothermelFireModel } from '../src/sim/rothermelFireModel';
 import { SpottingSystem } from '../src/sim/spottingSystem';
+import { GroundCrew } from '../src/sim/groundCrew';
 import { cellRGB, type Rgb } from '../src/render/palette';
 
 const CRC_TABLE: Uint32Array = (() => {
@@ -93,6 +95,15 @@ const world = createWorld({ width: WIDTH, height: HEIGHT, seed: SEED });
 generateTerrain(world);
 igniteNearestBurnable(world, WIDTH >> 1, HEIGHT >> 1);
 
+// Phase-4 4a: a ground crew cutting a vertical containment line east of the
+// ignition, so `frame.png` is honest evidence a line gets drawn (tan scratch) and
+// holds. The crew starts at the line's north end and cuts southward, order by order.
+const crewFuel = new TerrainFuelModel();
+const LINE_X = (WIDTH >> 1) + 24;
+const LINE_Y0 = (HEIGHT >> 1) - 40;
+const crew = new GroundCrew(crewFuel, { x: LINE_X, y: LINE_Y0 });
+for (let y = LINE_Y0; y < LINE_Y0 + 80; y++) crew.orderCutLine(LINE_X, y);
+
 const sim = new Simulation(world, [
   // Same dynamic wind as main.ts: shifts NE → N → NW over 30 sim-minutes, gusty.
   new DynamicWeatherProvider(
@@ -104,6 +115,9 @@ const sim = new Simulation(world, [
     { temperatureC: 30, relativeHumidity: 20, rainRate: 0, gust: { seed: SEED, speedAmp: 0.4, dirAmp: 0.35 } },
   ),
   new FuelMoistureSystem(),
+  // Suppression sits after moisture, before fire (weather → moisture → suppression
+  // → fire → spotting) so a same-tick line/backburn is honoured by the fire model.
+  crew,
   new RothermelFireModel(new TerrainFuelModel()),
   // Spotting runs after the fire model (additive `fire`-layer co-writer).
   new SpottingSystem(new TerrainFuelModel()),

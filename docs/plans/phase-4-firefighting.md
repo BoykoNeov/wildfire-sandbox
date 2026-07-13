@@ -123,9 +123,15 @@ in implementable detail:
      - **`backburn`**: `ignite()` an unburned cell between the line and the front,
        on the player's timing (the classic "fight fire with fire" — remove fuel
        ahead of the main front). No indraft modeling (see out-of-scope).
-     - **`direct-attack`**: spike `moisture` on the burning edge cell toward
-       saturation (knockdown). Decays via the moisture system — deliberately
-       temporary, to teach that hand crews hold the line, they don't extinguish.
+     - **`direct-attack`**: spike `moisture` toward saturation on the **unburned**
+       fuel in a small footprint at the active edge (knockdown). *Unburned*, not the
+       burning cell: the Rothermel model reads moisture only at the destination cell
+       the front spreads *into* (`rothermelFireModel.ts:144`), so a spike on a
+       burning cell is a literal no-op. A point crew's small wet patch is flanked by a
+       wide front; it decays via the moisture system once the crew leaves —
+       deliberately temporary, to teach that hand crews *hold* the line, they don't
+       extinguish. (Prose corrected during 4a build; the mechanism row below was
+       always right.)
 
 ### The cut-line fuel id
 Add `Fuel.CutLine = 4` to `basicFuelModel.ts`. It resolves to the **nonburnable**
@@ -245,7 +251,16 @@ determinism test untouched (the golden uses seed terrain that never paints id 4)
 1. **4a** — agent/travel/logistics substrate + containment line + backburn +
    `Fuel.CutLine` + the line/doctrine tests. **Exit:** the line-stops-the-front
    gate and the doctrine-pinning test pass; a line is drawable and holds in the
-   browser demo.
+   browser demo. **✅ DONE.** `src/sim/groundCrew.ts` (`GroundCrew`,
+   `agentType='hand-crew'`), `Fuel.CutLine=4` (nonburnable in both fuel tables) with
+   a tan palette entry, the browser command shell `src/editor/suppressionCommand.ts`
+   (wired in `main.ts`, ordered weather→moisture→suppression→fire→spotting), and
+   `tests/suppression.test.ts` + `tests/groundCrew.test.ts` (all five §Verification
+   gates: line-stops-front, wet-band stalls-then-crosses, logistics, doctrine-pinning,
+   anchor point). Determinism golden untouched; `npm run frame` draws a line (the
+   *mechanic* — line holds, wet patch is flanked — is proven headlessly by the tests;
+   the browser command shell is typechecked + built but its click→order path has not
+   been driven interactively).
 2. **4b** — engines: finite water, water-drawing direct attack, reload cycle.
    **Exit:** an engine holds an edge, runs dry, reloads, resumes.
 3. **4c** — aerial: drops + the `retardant` layer decision + the crown-fire

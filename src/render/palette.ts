@@ -44,6 +44,13 @@ export function cellRGB(world: WorldState, i: number, out: Rgb): void {
       out.g = 100 * shade;
       out.b = 55 * shade;
       return;
+    case Fuel.CutLine:
+      // Firefighter control line (Phase 4): a tan scratch of bared mineral soil,
+      // distinct from grey rock so a hand/dozer line reads as built, not natural.
+      out.r = 194 * shade;
+      out.g = 168 * shade;
+      out.b = 120 * shade;
+      return;
     default: {
       // Nonburnable is either low-lying water or high bare rock; terrain gen puts
       // water below ~300 m and rock above ~820 m, so split on elevation instead of

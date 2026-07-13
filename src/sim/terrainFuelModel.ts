@@ -42,7 +42,10 @@ export class TerrainFuelModel implements IFuelModel {
 
   constructor() {
     const anderson = new Anderson13FuelModel();
-    const ids = [Fuel.Nonburnable, Fuel.Grass, Fuel.Brush, Fuel.Timber];
+    // CutLine (Phase 4) is not in TERRAIN_TO_ANDERSON, so it falls through to
+    // Anderson id 0 = nonburnable — a control line is a barrier to the Rothermel
+    // model exactly as it is to the CA path, keeping the id purely a palette concern.
+    const ids = [Fuel.Nonburnable, Fuel.Grass, Fuel.Brush, Fuel.Timber, Fuel.CutLine];
     for (const id of ids) {
       this.table[id] = anderson.getParams(TERRAIN_TO_ANDERSON.get(id) ?? 0);
     }
