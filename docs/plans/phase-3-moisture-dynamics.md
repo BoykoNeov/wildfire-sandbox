@@ -96,6 +96,7 @@ verify headless.
   convention noted here (Rothermel sampled the *destination* cell, `CaFireModel` the
   *source* neighbour) is settled: **both models sample the destination cell**, pinned
   by `tests/wind-convention.test.ts`.
-- **Spotting** — embers launched ahead of the front start new ignitions. The most
-  complex of the three; moisture dynamics was deliberately the smallest and a clean
-  place to start. The last remaining Phase-3 item.
+- **Spotting** — **LANDED.** Embers launched ahead of the front start new
+  ignitions, including across firebreaks the surface fire can't cross. See
+  [`phase-3-spotting.md`](./phase-3-spotting.md). With this the Phase-3 dynamic-world
+  trio (moisture → wind → spotting) is complete.

@@ -3,8 +3,8 @@
  * shared palette the canvas renderer uses. This mirrors `main.ts`'s pipeline
  * (terrain gen -> uniform weather -> Rothermel ROS fire -> colour mapping)
  * without a browser, so the output is honest evidence of what the sandbox draws.
- * Includes the Phase-3 fuel-moisture system and dynamic (shifting, gusty) wind
- * (weather -> moisture -> fire).
+ * Includes the Phase-3 fuel-moisture system, dynamic (shifting, gusty) wind, and
+ * spotting (weather -> moisture -> fire -> spotting).
  *
  * Run: npx vite-node tools/renderFrame.ts
  */
@@ -17,6 +17,7 @@ import { TerrainFuelModel } from '../src/sim/terrainFuelModel';
 import { DynamicWeatherProvider } from '../src/sim/dynamicWeather';
 import { FuelMoistureSystem } from '../src/sim/fuelMoistureSystem';
 import { RothermelFireModel } from '../src/sim/rothermelFireModel';
+import { SpottingSystem } from '../src/sim/spottingSystem';
 import { cellRGB, type Rgb } from '../src/render/palette';
 
 const CRC_TABLE: Uint32Array = (() => {
@@ -104,6 +105,8 @@ const sim = new Simulation(world, [
   ),
   new FuelMoistureSystem(),
   new RothermelFireModel(new TerrainFuelModel()),
+  // Spotting runs after the fire model (additive `fire`-layer co-writer).
+  new SpottingSystem(new TerrainFuelModel()),
 ]);
 sim.run(STEPS, 1);
 

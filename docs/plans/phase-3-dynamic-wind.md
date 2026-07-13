@@ -3,7 +3,8 @@
 > **Status: LANDED (second Phase-3 step).** Wind is no longer a single constant
 > vector. A provider now writes a **time-varying mean** (keyframe-interpolated) with
 > an optional **drifting gust field** into `windU/windV` each tick, and the long-open
-> **wind-sampling convention** is settled. Remaining Phase-3 piece: spotting.
+> **wind-sampling convention** is settled. Spotting has since also landed —
+> [`phase-3-spotting.md`](./phase-3-spotting.md) — so Phase 3 is complete.
 
 **Goal (roadmap §6 "P3 dynamic wind/rain/spotting"; handoff §4.3):** make wind the
 headline dynamic event — *"a shift flips which flank is dangerous"* — and make it
@@ -74,5 +75,6 @@ sample wind at the DESTINATION cell** — the cell the front is spreading *into*
 
 ## The remaining Phase-3 piece
 
-- **Spotting** — embers launched ahead of the front start new ignitions. The most
-  complex of the three dynamic-world pieces; the last Phase-3 item.
+- **Spotting** — **LANDED.** Embers launched ahead of the front start new
+  ignitions, including across firebreaks the surface fire can't cross. See
+  [`phase-3-spotting.md`](./phase-3-spotting.md). Phase 3 is now complete.

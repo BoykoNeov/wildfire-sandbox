@@ -5,6 +5,7 @@ import { TerrainFuelModel } from './sim/terrainFuelModel';
 import { DynamicWeatherProvider } from './sim/dynamicWeather';
 import { FuelMoistureSystem } from './sim/fuelMoistureSystem';
 import { RothermelFireModel } from './sim/rothermelFireModel';
+import { SpottingSystem } from './sim/spottingSystem';
 import { CanvasRenderer } from './render/canvasRenderer';
 import { TerrainEditor } from './editor/terrainEditor';
 
@@ -52,7 +53,13 @@ const weather = new DynamicWeatherProvider(
 // moisture layer only; systems talk through layers (Handoff §3.1).
 const moisture = new FuelMoistureSystem();
 const fire = new RothermelFireModel(fuel);
-const sim = new Simulation(world, [weather, moisture, fire]);
+// Phase 3: spotting. Burning cells throw embers downwind that jump ahead of the
+// front (and across firebreaks). Ordered AFTER the fire model — it is an additive
+// co-writer of the `fire` layer, layering ember ignitions on top of surface
+// spread (see SpottingSystem for the contract). Reads the same fuel catalogue for
+// landing-cell reception; talks only through layers (Handoff §3.1).
+const spotting = new SpottingSystem(fuel);
+const sim = new Simulation(world, [weather, moisture, fire, spotting]);
 
 // Rendering reads world state but never drives the sim.
 const canvas = document.getElementById('view') as HTMLCanvasElement;
