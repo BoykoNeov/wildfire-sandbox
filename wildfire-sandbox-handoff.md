@@ -1,6 +1,6 @@
 # Wildfire & Firefighting Sandbox — Development Handoff
 
-**Status:** Design phase complete. Ready to begin Phase 1 implementation in Claude Code.
+**Status:** Design phase complete; Phases 1–6 implemented (see `docs/plans/` and the model card `docs/science.md`). The decisions below still govern.
 **Document purpose:** Captures the design decisions, architecture, and roadmap agreed during planning so development can continue without re-litigating settled questions. Read the *Key Decisions* section before changing direction on any of them — each was reasoned through deliberately.
 
 ---

@@ -7,7 +7,9 @@ validated/predictive tool — see the "Scope guardrails" below.
 **Read [`wildfire-sandbox-handoff.md`](./wildfire-sandbox-handoff.md) before
 changing direction on any architecture or scope decision.** Each decision there
 was reasoned deliberately; don't silently reverse one. Planning docs for
-in-flight features go in [`docs/plans/`](./docs/plans/).
+in-flight features go in [`docs/plans/`](./docs/plans/). **[`docs/science.md`](./docs/science.md)
+is the model card**: every equation, its source, the test that pins it, and the
+list of what is deliberately not modelled — update it when the science changes.
 
 ## Commands
 
@@ -17,7 +19,10 @@ npm test           # Vitest, headless (npm run test:watch for watch mode)
 npm run typecheck  # tsc --noEmit, strict
 npm run build      # typecheck + vite build
 npm run frame      # headless: run the real sim, write frame.png (smoke check)
+npm run frame -- timber-crown-run 3000 intensity   # any preset, steps, view
 ```
+
+The browser takes `?scenario=<preset-id>`; presets live in `src/scenario/presets.ts`.
 
 `tests/determinism.test.ts` runs the real terrain+CA pipeline and asserts a seed
 reproduces a run byte-for-byte — that is what backs the "seeded RNG everywhere"
@@ -45,20 +50,37 @@ Each commit should typecheck and pass tests. Conventional Commits style.
 
 `IFireModel`, `IFuelModel`, `IWeatherProvider`, `ISuppressionAgent`, `IRenderer`,
 and the unifying `IgnitableEntity`. All exist as stubs from Phase 1 so later
-phases are additive. Phase 1 implementations live in `src/sim/` (`CaFireModel`,
-`BasicFuelModel`, `UniformWeatherProvider`) and `src/render/`.
+phases are additive. The mounted pipeline is Rothermel (two-category, with the
+wind adjustment factor and crown fire evaluated inside `step`) over Anderson 13
+fuels; the Phase-1 `CaFireModel`/`BasicFuelModel` stay as the reference and back
+the determinism golden.
+
+**Output layers** (`intensity` kW/m, `crown` 0/1/2) are written **only by the
+fire model** when a cell ignites; spotting, stats and the renderer read them.
+**Pipeline order is load-bearing** and lives in one place, `loadScenario`:
+`weather → moisture → crew → engine → aircraft → retardant → fire → spotting`.
 
 ## Layout
 
 ```
-src/core/    world state, layers, rng, clock, system, simulation (the foundation)
-src/models/  the five swappable seam interfaces + IgnitableEntity
-src/sim/     seam implementations: P1 CA fire/basic fuel/uniform weather; P2 rothermel + anderson13
-src/gen/     terrain generation (seeded value noise)
-src/render/  canvas renderer
-src/main.ts  browser entry: wires world + systems + renderer, runs the loop
-tests/       headless tests — simulation.test.ts is the architecture proof
+src/core/      world state, layers, rng, clock, system, simulation (the foundation)
+src/models/    the five swappable seam interfaces + IgnitableEntity
+src/sim/       pure science modules (rothermel, anderson13, emc, windAdjustment,
+               crownFire, canopyStand) + systems (fire models, weather, moisture,
+               spotting, suppression agents, retardant) + stats (pure)
+src/gen/       terrain generation (seeded value noise)
+src/scenario/  Scenario data + loadScenario (the ONE pipeline builder) + presets
+src/render/    palette (shared colour composition, view modes), canvas renderer, wind overlay
+src/editor/    browser-only terrain editor + suppression command shell
+src/ui/        browser-only HUD (stats reader + run controls)
+src/main.ts    browser entry: loadScenario + renderer + editor + command + HUD, wall-clock pacing
+tools/         renderFrame.ts — headless PNG of any preset/view, same loader
+tests/         headless tests — simulation.test.ts is the architecture proof
+docs/          science.md (model card), plans/ (per-phase plans + decisions)
 ```
+
+Browser-only code (`editor/`, `ui/`, `main.ts`) is non-deterministic by design
+and never enters the sim: it enqueues orders / paints layer bytes / reads state.
 
 ## Scope guardrails (from handoff §1, §2.1)
 
@@ -71,6 +93,10 @@ When unsure on realism: **science-grounded sandbox, not CFD, not predictive.**
 
 ## Roadmap (handoff §6)
 
-P1 core CA + seams (done) → P2 Anderson 13 + Rothermel + moisture + editor →
-P3 dynamic wind/rain/spotting → P4 firefighting doctrine → P5 polish.
-Each phase must be runnable and verifiable before the next.
+P1 core CA + seams ✅ → P2 Anderson 13 + Rothermel + moisture + editor ✅ →
+P3 dynamic wind/rain/spotting ✅ → P4 firefighting doctrine ✅ → P5 polish
+(5-viz ✅, 5a stats HUD ✅, 5b scenarios ✅, 5c save/load deferred) → P6 science
+hurdles (intensity layer, wind adjustment factor, crown fire, perf) ✅.
+Next: the honest gaps in `docs/science.md` §9 (Huygens wavefront, per-class dead
+moisture, live-moisture curve), then the additive future phases (WUI structures
+→ industrial). Each phase must be runnable and verifiable before the next.

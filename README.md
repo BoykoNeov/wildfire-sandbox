@@ -19,7 +19,13 @@ npm run dev        # interactive sandbox at http://localhost:5173
 npm test           # headless sim tests (the architecture proof lives here)
 npm run typecheck  # strict TypeScript, no emit
 npm run frame      # headless: run the real sim and write frame.png
+npm run frame -- timber-crown-run 3000 intensity   # any preset · steps · view
 ```
+
+Open `http://localhost:5173/?scenario=timber-crown-run` (or pick a unit in the
+HUD). Presets: **shifting-winds** (a wind shift flips the dangerous flank),
+**grass-valley** (fast cured grass), **timber-crown-run** (torching → active crown
+fire → long-range spotting), **rain-front** (a weather front stalls the fire).
 
 ## Architecture in one breath
 
@@ -28,11 +34,25 @@ npm run frame      # headless: run the real sim and write frame.png
 - The sim is **headless** — it steps without drawing; the renderer reads world state but never drives the sim.
 - Five swappable **seams** (`IFireModel`, `IFuelModel`, `IWeatherProvider`, `ISuppressionAgent`, `IRenderer`) abstract at the system/model boundary, never per-cell.
 
+## What's modelled
+
+Rothermel (1972 / Albini 1976) two-category surface spread over the Anderson 13
+fuel models; Simard EMC dead-fuel moisture with a 1-hr timelag and rain; the
+Albini–Baughman wind adjustment factor (20-ft wind → midflame, canopy-sheltered);
+crown fire by Van Wagner initiation + Rothermel-1991 crown rate + crown fraction
+burned; phenomenological spotting (crown runs throw far more embers); layer-only
+suppression doctrine (line, backburn, knockdown, engines with a finite tank,
+tankers with water / persistent retardant and a crown-fire falloff). Every
+equation, its source, its test and every deliberate omission are in
+[`docs/science.md`](./docs/science.md).
+
 ## Roadmap (see handoff §6)
 
-Phase 1 (this scaffold) — core CA spread + all seams stubbed. → Phase 2 science
-anchor (Anderson 13 + Rothermel) → Phase 3 dynamic world → Phase 4 firefighting
-→ Phase 5 polish. Structures/WUI and industrial fires are additive later phases.
+Phase 1 core CA + seams → Phase 2 science anchor → Phase 3 dynamic world →
+Phase 4 firefighting → Phase 5 polish (scenarios, stats HUD; save/load deferred)
+→ Phase 6 science hurdles (intensity layer, wind reference, crown fire) — all
+landed; see [`docs/plans/`](./docs/plans/). Structures/WUI and industrial fires
+are additive later phases.
 
 ## License
 

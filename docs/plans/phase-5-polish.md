@@ -1,6 +1,7 @@
 # Phase 5 — Polish (visuals, stats HUD, scenarios)
 
-> **Status: 5-viz IN PROGRESS · 5a/5b PLANNED · 5c (save/load) DEFERRED.**
+> **Status: 5-viz ✅ · 5a stats HUD ✅ · 5b scenarios ✅ (both landed with
+> [`phase-6-science-hurdles.md`](./phase-6-science-hurdles.md)) · 5c (save/load) DEFERRED.**
 > Phase 4 (firefighting doctrine) is complete. This is the plan for the roadmap's
 > last core phase (handoff §6): "UI, scenarios, stats overlays, save/load (seeded
 > RNG makes scenarios reproducible)."
@@ -142,7 +143,7 @@ page chrome. Zero sim writes; suite + golden must stay green untouched.
 not pixels) + `npm run frame` PNG visibly improved (relief, front gradient,
 glow) + browser smoke.
 
-## 5a — stats HUD
+## 5a — stats HUD — **✅ DONE** (`src/sim/stats.ts`, `src/ui/hud.ts`, `tests/stats.test.ts`)
 
 - `src/sim/stats.ts` (or `src/core/stats.ts`): `computeStats(world, baseline)`
   pure function; `baseline` = initially-burnable cell count captured at load.
@@ -156,7 +157,7 @@ glow) + browser smoke.
 
 **Verify:** stats tests green; HUD numbers move sensibly in a live run.
 
-## 5b — scenarios
+## 5b — scenarios — **✅ DONE** (`src/scenario/`, `tests/scenario.test.ts`; `main.ts` + `renderFrame.ts` share `loadScenario`)
 
 - `src/scenario/scenario.ts`: the `Scenario` interface (plain data, decision
   #4) + `loadScenario`.
