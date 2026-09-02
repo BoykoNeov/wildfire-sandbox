@@ -16,9 +16,10 @@ import { byteToFraction } from '../core/moisture';
  * **A separate {@link System}, ordered AFTER the fire model** (Handoff §3.1 —
  * systems talk only through layers, never call each other). It reads the `fire`
  * layer to find ember *sources*, `canopy` (the torching proxy — timber throws
- * brands, grass barely does), `windU/windV` for transport, and `fuel`+`moisture`
- * at the landing cell for reception; it writes new `Burning` cells back into
- * `fire`. It is an **additive co-writer of the `fire` layer**: the Rothermel/CA
+ * brands, grass barely does), `crown` (the fire model's crown-fire verdict —
+ * a torching or running crown multiplies launch rate and loft distance),
+ * `windU/windV` for transport, and `fuel`+`moisture` at the landing cell for
+ * reception; it writes new `Burning` cells back into `fire`. It is an **additive co-writer of the `fire` layer**: the Rothermel/CA
  * fire model owns surface spread and must run *first*; spotting layers ember
  * ignitions on top. Reordering the pipeline so spotting runs before the fire
  * model would break this contract.
@@ -57,6 +58,7 @@ export class SpottingSystem implements System {
     const moist = layers.moisture.data;
     const windU = layers.windU.data;
     const windV = layers.windV.data;
+    const crown = layers.crown.data;
     const burnElapsed = layers.burnElapsed.data;
 
     // Landing ignitions, collected during the sweep and applied after it (see the
@@ -88,15 +90,19 @@ export class SpottingSystem implements System {
         // dt-robust launch Bernoulli: p = 1 − exp(−rate·dt), so the per-tick
         // chance is consistent whatever dt the caller uses (same form as the
         // moisture step). One ember per cell per tick at most.
-        const rate = SPOT_RATE_BASE * canopyFrac * windSpeed;
+        // A crowning cell (torching or a running crown — `layers.crown`, written
+        // by the fire model) is the real ember factory: the convective column
+        // lofts far more brands, far higher. Surface fire keeps the base rate.
+        const crownType = crown[i];
+        const rate = SPOT_RATE_BASE * canopyFrac * windSpeed * CROWN_LAUNCH_BOOST[crownType];
         const pLaunch = 1 - Math.exp(-rate * dt);
         if (rng.next() >= pLaunch) continue;
 
         // Heavy-tailed downwind loft distance: exponential (mean = loftScale),
         // so most brands drop near and a few carry far. Scale grows with wind
-        // (transport) and canopy (plume height).
+        // (transport), canopy (plume height) and crowning (column height).
         const u = rng.next();
-        const loftScale = LOFT_PER_WIND * windSpeed * (0.5 + canopyFrac);
+        const loftScale = LOFT_PER_WIND * windSpeed * (0.5 + canopyFrac) * CROWN_LOFT_BOOST[crownType];
         const distM = -Math.log(1 - u) * loftScale;
 
         // Bearing = wind direction ± a jitter cone (brands scatter about downwind).
@@ -151,3 +157,12 @@ const SPREAD_ANGLE_RAD = 0.35;
 const RECEPTION = 0.5;
 /** Extinction-moisture fallback for a landing fuel with no Rothermel descriptor. */
 const DEFAULT_EXTINCTION_MOISTURE = 0.3;
+/**
+ * Launch-rate multiplier by crown state [none, passive, active]. A torching
+ * tree throws several times the brands of a surface fire under it; a running
+ * crown fire is the classic long-range spotting engine. Index 0 = 1 keeps every
+ * surface-only scenario (and the spotting tests) exactly as before.
+ */
+const CROWN_LAUNCH_BOOST = [1, 3, 6];
+/** Loft-distance multiplier by crown state — a taller convective column carries further. */
+const CROWN_LOFT_BOOST = [1, 1.5, 2.5];

@@ -3,9 +3,21 @@ import type { IFireModel } from '../models/IFireModel';
 import type { IFuelModel } from '../models/IFuelModel';
 import type { RothermelFuel } from '../models/IFuelModel';
 import { byteToFraction } from '../core/moisture';
-import { deadFuelBed, fuelBed } from './anderson13';
-import { canopyCoverFraction, DEFAULT_CANOPY_STAND, type CanopyStand } from './canopyStand';
-import { windAdjustmentFactor } from './windAdjustment';
+import { ANDERSON_13, deadFuelBed, fuelBed } from './anderson13';
+import {
+  canopyBulkDensity,
+  canopyCoverFraction,
+  DEFAULT_CANOPY_STAND,
+  type CanopyStand,
+} from './canopyStand';
+import { unshelteredWaf, windAdjustmentFactor } from './windAdjustment';
+import {
+  CROWN_WIND_REDUCTION,
+  CrownFire,
+  evaluateCrownFire,
+  type CrownInputs,
+  type CrownResult,
+} from './crownFire';
 import {
   btuPerFtSecToKwPerM,
   characteristicSAV,
@@ -13,7 +25,7 @@ import {
   ftPerMinToMetersPerSec,
   metersPerSecToFtPerMin,
   surfaceSpread,
-  type SpreadResult,
+  type FuelBed,
 } from './rothermel';
 
 // 8-neighbour offsets and their cell-distances (cardinals = 1, diagonals = √2).
@@ -23,6 +35,10 @@ const NDIST = [Math.SQRT2, 1, Math.SQRT2, 1, 1, Math.SQRT2, 1, Math.SQRT2];
 
 /** Default live-fuel moisture [fraction] — 100%, a green-but-not-peak baseline. */
 const DEFAULT_LIVE_MOISTURE = 1.0;
+/** Canopy bulk density below which a cell has no crown to burn [kg/m³] (grass ≈ 0.01). */
+const MIN_CROWN_CBD = 0.02;
+/** Rothermel-1991's crown proxy fuel bed: Anderson FM10. */
+const FM10 = ANDERSON_13.get(10)!;
 
 /**
  * What the world's `windU/windV` field means to this model.
@@ -47,8 +63,15 @@ export interface RothermelFireModelOptions {
   liveMoisture?: number;
   /** See {@link WindReference}. Default `'midflame'`. */
   windReference?: WindReference;
-  /** Canopy structure for wind sheltering (and crown fire). Default {@link DEFAULT_CANOPY_STAND}. */
+  /** Canopy structure for wind sheltering and crown fire. Default {@link DEFAULT_CANOPY_STAND}. */
   canopy?: CanopyStand;
+  /**
+   * Enable the crown-fire transition (`crownFire.ts`): surface fire whose
+   * intensity reaches Van Wagner's I_0 under a canopy torches or runs as a crown
+   * fire, spreading at the Rothermel-1991 crown rate. Default `true` — a stand
+   * with canopy crowns when it should; set `false` for a surface-only model.
+   */
+  crownFire?: boolean;
 }
 
 /**
@@ -83,13 +106,28 @@ export interface RothermelFireModelOptions {
  * time view; burnout (`Burning → Burned`) is then purely the cosmetic flame
  * duration and is decoupled from spread.
  *
- * **Fireline intensity is an output layer.** When a cell ignites, the Byram
- * fireline intensity of the fastest arriving direction is written to
- * `layers.intensity` (kW/m) — the front's own record of how hard it burned into
- * each cell. Externally-lit cells (ignition tool, ember, backburn) have no arriving
- * front; they get their head-fire intensity (own bed, local wind magnitude, flat)
- * on their first burning tick. Nothing else writes the layer (Handoff §3.1); the
- * crown-fire and spotting science and the renderer only read it.
+ * **Fireline intensity and crown state are output layers.** When a cell ignites,
+ * the Byram fireline intensity of the fastest arriving direction is written to
+ * `layers.intensity` (kW/m) and its crown-fire type to `layers.crown` — the
+ * front's own record of how it burned into each cell. Externally-lit cells
+ * (ignition tool, ember, backburn) have no arriving front; they get their
+ * head-fire values (own bed, local wind magnitude, flat) on their first burning
+ * tick. Nothing else writes these layers (Handoff §3.1); spotting and the
+ * renderer only read them.
+ *
+ * **Crown fire — the second stacked layer (handoff §2.1).** Per direction, the
+ * surface result is passed through `evaluateCrownFire`: if the surface intensity
+ * reaches Van Wagner's I_0 for the scenario's canopy stand (crown base height,
+ * foliar moisture), the direction's rate becomes the crown-blended rate (surface
+ * → Rothermel-1991 active rate by crown fraction burned) and its intensity adds
+ * the canopy fuel consumed. The FM10 proxy bed the 1991 correlation needs is
+ * assembled once per candidate cell, at the cell's own dead/live moisture, and
+ * driven by 0.4 × the 20-ft wind — under the `'midflame'` convention the 20-ft
+ * wind is backed out through the surface fuel's own unsheltered WAF. Canopy
+ * bulk density comes from the cell's canopy byte × the stand's maximum, so
+ * grass (CBD ≈ 0.01) never crowns and a canopy byte of 0 short-circuits the
+ * whole evaluation. Everything stays inside `step(world, dt)`: no new seam, no
+ * per-cell virtual calls.
  *
  * Determinism: sources are read from the pre-tick `fire` buffer (double-buffered
  * like {@link CaFireModel}); each cell writes only its own `progress`. So the
@@ -116,6 +154,21 @@ export class RothermelFireModel implements IFireModel {
   private readonly liveMoisture: number;
   private readonly windReference: WindReference;
   private readonly canopy: CanopyStand;
+  private readonly crownEnabled: boolean;
+
+  // Scratch records reused across cells/directions — the hot loop allocates only
+  // the fuel beds it must (one surface bed per candidate cell, one FM10 bed per
+  // crown candidate), never per direction.
+  private readonly crownIn: CrownInputs = {
+    surfaceIntensity: 0,
+    surfaceRos: 0,
+    fm10Ros: 0,
+    cbd: 0,
+    baseHeightM: 0,
+    standHeightM: 0,
+    foliarMoisturePct: 0,
+  };
+  private readonly crownOut: CrownResult = { type: CrownFire.None, cfb: 0, ros: 0, intensity: 0 };
 
   constructor(
     private readonly fuel: IFuelModel,
@@ -125,6 +178,53 @@ export class RothermelFireModel implements IFireModel {
     this.liveMoisture = o.liveMoisture ?? DEFAULT_LIVE_MOISTURE;
     this.windReference = o.windReference ?? 'midflame';
     this.canopy = o.canopy ?? DEFAULT_CANOPY_STAND;
+    this.crownEnabled = o.crownFire ?? true;
+    this.crownIn.baseHeightM = this.canopy.baseHeightM;
+    this.crownIn.standHeightM = this.canopy.standHeightM;
+    this.crownIn.foliarMoisturePct = this.canopy.foliarMoisturePct;
+  }
+
+  /**
+   * Fire behaviour along one direction into a cell: surface Rothermel, then the
+   * crown transition when the cell has a crown and the surface fire is hot enough.
+   * `windMps` is the midflame wind along the direction (≥ 0, already WAF-reduced);
+   * `openWindMps` the corresponding 20-ft wind for the crown proxy. Returns the
+   * rate in m/s and leaves intensity [kW/m] + crown type in `this.crownOut`.
+   */
+  private directionBehaviour(
+    bed: FuelBed,
+    fm10: FuelBed | null,
+    cbd: number,
+    windMps: number,
+    openWindMps: number,
+    tanSlope: number,
+  ): number {
+    const r = surfaceSpread(bed, { midflameWind: metersPerSecToFtPerMin(windMps), tanSlope });
+    const out = this.crownOut;
+    out.type = CrownFire.None;
+    out.intensity = btuPerFtSecToKwPerM(r.firelineIntensity);
+    if (fm10 === null || r.rateOfSpread <= 0) return ftPerMinToMetersPerSec(r.rateOfSpread);
+
+    const inp = this.crownIn;
+    inp.surfaceIntensity = out.intensity;
+    inp.surfaceRos = r.rateOfSpread * 0.3048; // ft/min → m/min
+    inp.cbd = cbd;
+    // Cheap reject before the FM10 evaluation: below I_0 nothing changes.
+    inp.fm10Ros = 0;
+    if (evaluateCrownFire(inp, out).type === CrownFire.None) {
+      return ftPerMinToMetersPerSec(r.rateOfSpread);
+    }
+    const crownWind = metersPerSecToFtPerMin(CROWN_WIND_REDUCTION * openWindMps);
+    inp.fm10Ros = surfaceSpread(fm10, { midflameWind: crownWind, tanSlope }).rateOfSpread * 0.3048;
+    evaluateCrownFire(inp, out);
+    return out.ros / 60; // m/min → m/s
+  }
+
+  /** The FM10 crown-proxy bed for a cell, or null when the cell cannot crown. */
+  private crownBedFor(canopyByte: number, deadMoisture: number): FuelBed | null {
+    if (!this.crownEnabled) return null;
+    if (canopyBulkDensity(canopyByte, this.canopy) < MIN_CROWN_CBD) return null;
+    return fuelBed(FM10, deadMoisture, this.liveMoisture);
   }
 
   /**
@@ -142,6 +242,18 @@ export class RothermelFireModel implements IFireModel {
     );
   }
 
+  /**
+   * The 20-ft open wind for the crown proxy, from a world wind component `w` and
+   * the cell's WAF: the layer itself under `'open'`; under `'midflame'` the layer
+   * is flame-height wind, so back the open wind out through the surface fuel's
+   * unsheltered WAF (the reduction a 20-ft wind would have suffered over that bed).
+   */
+  private openWind(rf: RothermelFuel, w: number, waf: number): number {
+    if (this.windReference === 'open') return w;
+    const u = unshelteredWaf(rf.depth);
+    return u > 0 ? (w * waf) / u : 0;
+  }
+
   step(world: WorldState, dt: number): void {
     const { width, height, cellSize, layers } = world;
     const fire = layers.fire.data;
@@ -153,6 +265,7 @@ export class RothermelFireModel implements IFireModel {
     const canopyL = layers.canopy.data;
     const burnElapsed = layers.burnElapsed.data;
     const intensity = layers.intensity.data;
+    const crown = layers.crown.data;
 
     if (this.next === null || this.next.length !== fire.length) {
       this.next = new Uint8Array(fire.length);
@@ -177,10 +290,21 @@ export class RothermelFireModel implements IFireModel {
           // and hence no recorded intensity: give it its own head-fire intensity
           // once, so every burning cell carries a defined value for readers.
           if (intensity[i] === 0 && rf) {
-            const bed = fuelBed(rf, byteToFraction(moist[i]), this.liveMoisture);
-            const speed = Math.hypot(windU[i], windV[i]) * this.midflameFactor(rf, canopyL[i]);
-            const r = surfaceSpread(bed, { midflameWind: metersPerSecToFtPerMin(speed), tanSlope: 0 });
-            intensity[i] = btuPerFtSecToKwPerM(r.firelineIntensity);
+            const m = byteToFraction(moist[i]);
+            const bed = fuelBed(rf, m, this.liveMoisture);
+            const waf = this.midflameFactor(rf, canopyL[i]);
+            const speed = Math.hypot(windU[i], windV[i]);
+            const fm10 = this.crownBedFor(canopyL[i], m);
+            this.directionBehaviour(
+              bed,
+              fm10,
+              canopyBulkDensity(canopyL[i], this.canopy),
+              speed * waf,
+              this.openWind(rf, speed, waf),
+              0,
+            );
+            intensity[i] = this.crownOut.intensity;
+            crown[i] = this.crownOut.type;
           }
           // Burnout is cosmetic flame duration (Albini residence time τ = 384/σ),
           // independent of spread. No rothermel descriptor ⇒ can't sustain ⇒ out.
@@ -210,15 +334,19 @@ export class RothermelFireModel implements IFireModel {
         }
         if (!hasSource) continue;
 
-        const bed = fuelBed(rf, byteToFraction(moist[i]), this.liveMoisture);
+        const m = byteToFraction(moist[i]);
+        const bed = fuelBed(rf, m, this.liveMoisture);
         // Wind sampled at THIS (destination) cell — see world.ts windU/windV — and
         // reduced to midflame here, once, since the factor is a property of the cell.
         const waf = this.midflameFactor(rf, canopyL[i]);
-        const wu = windU[i] * waf;
-        const wv = windV[i] * waf;
+        const wu = windU[i];
+        const wv = windV[i];
+        const fm10 = this.crownBedFor(canopyL[i], m);
+        const cbd = canopyBulkDensity(canopyL[i], this.canopy);
 
         let maxRate = 0; // max ROS_dir / (dist·cellSize)  [1/s]
-        let best: SpreadResult | null = null; // the fire behaviour along that direction
+        let bestIntensity = 0; // fire behaviour along that fastest direction
+        let bestCrown = 0;
         for (let n = 0; n < 8; n++) {
           const nx = x + NX[n];
           const ny = y + NY[n];
@@ -231,20 +359,28 @@ export class RothermelFireModel implements IFireModel {
           const dx = -NX[n] / dist;
           const dy = -NY[n] / dist;
 
-          // Wind (m/s) projected onto the spread direction → ft/min, downwind only.
+          // Wind (m/s) projected onto the spread direction, downwind only.
           const windAlong = dx * wu + dy * wv;
-          const midflameWind = windAlong > 0 ? metersPerSecToFtPerMin(windAlong) : 0;
+          const along = windAlong > 0 ? windAlong : 0;
 
           // Slope rise/run from neighbour to this cell; upslope only.
           const run = dist * cellSize;
           const rise = elev[i] - elev[ni];
           const tanSlope = rise > 0 ? rise / run : 0;
 
-          const result = surfaceSpread(bed, { midflameWind, tanSlope });
-          const rate = ftPerMinToMetersPerSec(result.rateOfSpread) / run;
+          const rosMps = this.directionBehaviour(
+            bed,
+            fm10,
+            cbd,
+            along * waf,
+            this.openWind(rf, along, waf),
+            tanSlope,
+          );
+          const rate = rosMps / run;
           if (rate > maxRate) {
             maxRate = rate;
-            best = result;
+            bestIntensity = this.crownOut.intensity;
+            bestCrown = this.crownOut.type;
           }
         }
 
@@ -252,7 +388,8 @@ export class RothermelFireModel implements IFireModel {
         if (progress[i] >= 1) {
           next[i] = FireState.Burning;
           burnElapsed[i] = 0;
-          intensity[i] = best ? btuPerFtSecToKwPerM(best.firelineIntensity) : 0;
+          intensity[i] = bestIntensity;
+          crown[i] = bestCrown;
         }
       }
     }

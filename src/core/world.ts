@@ -53,6 +53,14 @@ export interface Layers {
    */
   intensity: Layer<Float32Array>;
   /**
+   * Crown-fire state the arriving front had when it ignited each cell — a second
+   * fire-behaviour *output* layer, written alongside `intensity` by the Rothermel
+   * fire model only: `0` surface fire / never burned, `1` passive crowning
+   * (torching), `2` active crown run (see `CrownFire` in `sim/crownFire.ts`).
+   * Read by spotting (crowning cells throw far more embers) and the renderer.
+   */
+  crown: Layer<Uint8Array>;
+  /**
    * Wind field, written by IWeatherProvider, read by IFireModel. A vector pointing
    * the way the wind blows; the Rothermel fire model reads its components as
    * **midflame wind in m/s** (plan §D3). (The legacy Phase-1 `CaFireModel` instead
@@ -125,6 +133,7 @@ export function createWorld(opts: WorldOptions): WorldState {
     fire: uint8Layer(width, height),
     burnElapsed: float32Layer(width, height),
     intensity: float32Layer(width, height),
+    crown: uint8Layer(width, height),
     windU: float32Layer(width, height),
     windV: float32Layer(width, height),
   };
