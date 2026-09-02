@@ -34,7 +34,14 @@ const editor = new TerrainEditor(canvas, world);
 // Phase-4 command shell: click/drag issues orders to the units (cut line, backburn,
 // direct attack, engine station, aerial drops). Browser-only, like the editor; it
 // enqueues orders and draws the unit markers — it never writes world state itself.
-const command = crew ? new SuppressionCommand(canvas, world, crew, engine ?? undefined, aircraft ?? undefined) : null;
+// Built whenever the scenario wires ANY unit, and every unit is independently
+// optional: the panel offers exactly the tools whose unit exists, so a roster that
+// omits (say) the hand crew still commands its engine and air tanker. Only a
+// scenario with no `agents` at all gets no panel, which is what it asked for.
+const command =
+  crew || engine || aircraft
+    ? new SuppressionCommand(canvas, world, crew ?? undefined, engine ?? undefined, aircraft ?? undefined)
+    : null;
 
 // Run state owned by the page: pacing, view mode, overlays. The HUD reports
 // control changes through callbacks and formats stats each frame (Phase-5a).
