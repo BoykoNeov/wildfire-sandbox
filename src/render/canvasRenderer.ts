@@ -1,6 +1,6 @@
 import type { WorldState } from '../core/world';
 import type { IRenderer } from '../models/IRenderer';
-import { renderRGBA } from './palette';
+import { renderRGBA, type ViewMode } from './palette';
 
 /**
  * 2D top-down canvas renderer (Handoff §2.2). Reads world state, writes pixels;
@@ -11,6 +11,8 @@ import { renderRGBA } from './palette';
 export class CanvasRenderer implements IRenderer {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly image: ImageData;
+  /** Which data the unburned landscape encodes (see {@link ViewMode}). Fire draws the same on all. */
+  view: ViewMode = 'terrain';
 
   constructor(canvas: HTMLCanvasElement, world: WorldState) {
     canvas.width = world.width;
@@ -22,7 +24,7 @@ export class CanvasRenderer implements IRenderer {
   }
 
   render(world: WorldState): void {
-    renderRGBA(world, this.image.data);
+    renderRGBA(world, this.image.data, { view: this.view });
     this.ctx.putImageData(this.image, 0, 0);
   }
 }

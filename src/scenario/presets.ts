@@ -92,7 +92,7 @@ const timberCrownRun: Scenario = {
   fireModel: {
     windReference: 'open',
     liveMoisture: 0.8,
-    canopy: { standHeightM: 24, crownRatio: 0.6, baseHeightM: 2, maxBulkDensityKgM3: 0.28, foliarMoisturePct: 90 },
+    canopy: { standHeightM: 22, crownRatio: 0.6, baseHeightM: 2, maxBulkDensityKgM3: 0.16, foliarMoisturePct: 90 },
   },
   weather: {
     wind: [

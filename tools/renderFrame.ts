@@ -3,8 +3,8 @@
  * shared palette the canvas renderer uses, built by the SAME `loadScenario` the
  * browser entry uses. So the output is honest evidence of what the sandbox draws.
  *
- * Run: npm run frame [-- <preset-id> [steps]]        (default: shifting-winds, 2000)
- *      npx vite-node tools/renderFrame.ts timber-crown-run 3600
+ * Run: npm run frame [-- <preset-id> [steps [view]]]   (default: shifting-winds, 2000, terrain)
+ *      npx vite-node tools/renderFrame.ts timber-crown-run 3600 intensity
  *
  * On top of the preset it issues a fixed set of Phase-4 orders (a crew line, an
  * engine station with a reload cycle, one retardant drop) so the frame also shows
@@ -14,7 +14,7 @@
 import { deflateSync } from 'node:zlib';
 import { writeFileSync } from 'node:fs';
 import type { WorldState } from '../src/core/world';
-import { renderRGBA } from '../src/render/palette';
+import { renderRGBA, VIEW_MODES, type ViewMode } from '../src/render/palette';
 import { loadScenario } from '../src/scenario/scenario';
 import { findPreset, DEFAULT_PRESET_ID, PRESETS } from '../src/scenario/presets';
 
@@ -65,9 +65,9 @@ function encodePng(width: number, height: number, rgba: Uint8Array): Buffer {
   ]);
 }
 
-function renderToRgba(world: WorldState): Uint8Array {
+function renderToRgba(world: WorldState, view: ViewMode): Uint8Array {
   const rgba = new Uint8Array(world.width * world.height * 4);
-  renderRGBA(world, rgba); // shared composition: per-cell colours + fire glow
+  renderRGBA(world, rgba, { view }); // shared composition: per-cell colours + fire glow
   return rgba;
 }
 
@@ -78,6 +78,11 @@ if (!preset) {
   process.exit(1);
 }
 const STEPS = Number(process.argv[3] ?? 2000);
+const VIEW = (process.argv[4] ?? 'terrain') as ViewMode;
+if (!VIEW_MODES.some((v) => v.id === VIEW)) {
+  console.error(`unknown view "${VIEW}" — one of: ${VIEW_MODES.map((v) => v.id).join(', ')}`);
+  process.exit(1);
+}
 
 const { world, sim, crew, engine, aircraft } = loadScenario(preset);
 const cx = world.width >> 1;
@@ -96,5 +101,5 @@ aircraft?.orderRetardantDrop(cx + 30, cy - 24);
 sim.run(STEPS, 1);
 
 const out = 'frame.png';
-writeFileSync(out, encodePng(world.width, world.height, renderToRgba(world)));
-console.log(`wrote ${out} — ${preset.id}, ${world.width}x${world.height}, ${STEPS} steps, seed ${preset.seed}`);
+writeFileSync(out, encodePng(world.width, world.height, renderToRgba(world, VIEW)));
+console.log(`wrote ${out} — ${preset.id} (${VIEW}), ${world.width}x${world.height}, ${STEPS} steps, seed ${preset.seed}`);

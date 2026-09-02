@@ -1,5 +1,35 @@
 import { FireState, type WorldState } from '../core/world';
 import { Fuel } from '../sim/basicFuelModel';
+import { CrownFire } from '../sim/crownFire';
+
+/**
+ * What the unburned landscape shows. Fire (flames, char, the live scar edge) is
+ * drawn identically on every view so the front always reads; the views only
+ * change what the ground underneath encodes:
+ *  - `terrain`   — the composed scene: fuel colour × moisture tint × hillshade.
+ *  - `fuel`      — flat fuel classes (grass / brush / timber / rock / water / line).
+ *  - `moisture`  — dead-fuel moisture, dry brown → wet blue (the layer that
+ *                  decides everything; drops, knockdowns and drying read directly).
+ *  - `elevation` — hypsometric tint + hillshade.
+ *  - `canopy`    — canopy byte, bare → dense green (what can shelter, crown, spot).
+ *  - `intensity` — burned cells by the fireline intensity that took them, a
+ *                  heat ramp; unburned ground dimmed. The "how hard did it burn
+ *                  here" map, with crown runs at the top of the ramp.
+ */
+export type ViewMode = 'terrain' | 'fuel' | 'moisture' | 'elevation' | 'canopy' | 'intensity';
+
+export const VIEW_MODES: ReadonlyArray<{ id: ViewMode; label: string }> = [
+  { id: 'terrain', label: 'Terrain' },
+  { id: 'fuel', label: 'Fuel' },
+  { id: 'moisture', label: 'Moisture' },
+  { id: 'elevation', label: 'Elevation' },
+  { id: 'canopy', label: 'Canopy' },
+  { id: 'intensity', label: 'Intensity' },
+];
+
+export interface RenderOptions {
+  view?: ViewMode;
+}
 
 export interface Rgb {
   r: number;
@@ -80,7 +110,7 @@ const RETARDANT_RGB: Rgb = { r: 200, g: 70, b: 45 };
  * Map one cell to an RGB colour. Writes into `out` to avoid a per-cell
  * allocation in the hot loop.
  */
-export function cellRGB(world: WorldState, i: number, out: Rgb): void {
+export function cellRGB(world: WorldState, i: number, out: Rgb, view: ViewMode = 'terrain'): void {
   const { width, layers, clock } = world;
   const x = i % width;
   const y = (i / width) | 0;
@@ -107,16 +137,49 @@ export function cellRGB(world: WorldState, i: number, out: Rgb): void {
       out.g = lerp(150, 62, k) * f;
       out.b = lerp(40, 18, k) * f;
     }
+    // Crown fire burns hotter and taller: an active run reads white-hot with a
+    // blue-white core, torching reads as a brighter, yellower flame. Both are
+    // the fire model's own verdict (`layers.crown`), not a guess from canopy.
+    const cr = layers.crown.data[i];
+    if (cr === CrownFire.Active) {
+      out.r = out.r * 0.35 + 255 * 0.65;
+      out.g = out.g * 0.35 + 246 * 0.65;
+      out.b = out.b * 0.35 + 230 * 0.65;
+    } else if (cr === CrownFire.Passive) {
+      out.r = out.r * 0.6 + 255 * 0.4;
+      out.g = out.g * 0.6 + 214 * 0.4;
+      out.b = out.b * 0.6 + 120 * 0.4;
+    }
     clampRgb(out);
     return;
   }
 
   if (state === FireState.Burned) {
-    // Hash-varied char so the scar reads as texture, not a flat black blob.
+    if (view === 'intensity') {
+      // Heat ramp by the recorded fireline intensity (kW/m, log-scaled: 10 →
+      // 10 000 spans creeping surface fire → active crown run).
+      heatRamp(layers.intensity.data[i], out);
+      clampRgb(out);
+      return;
+    }
+    // Hash-varied char so the scar reads as texture, not a flat black blob. A
+    // crown-consumed cell is pale grey ash (the canopy is gone); a surface burn
+    // under an intact canopy keeps the dark brown-black char.
     const j = (hash01(i) - 0.5) * 14;
-    out.r = 36 + j;
-    out.g = 30 + j * 0.8;
-    out.b = 27 + j * 0.7;
+    const cr = layers.crown.data[i];
+    if (cr === CrownFire.Active) {
+      out.r = 118 + j;
+      out.g = 112 + j;
+      out.b = 104 + j;
+    } else if (cr === CrownFire.Passive) {
+      out.r = 74 + j;
+      out.g = 66 + j * 0.9;
+      out.b = 58 + j * 0.8;
+    } else {
+      out.r = 36 + j;
+      out.g = 30 + j * 0.8;
+      out.b = 27 + j * 0.7;
+    }
     // The scar EDGE smolders. Honest to the mounted model (§D4): Burned cells
     // are permanent spread sources, so an edge still facing unburned burnable
     // fuel is never dead — it glows dim ember with a slow breathing pulse. An
@@ -144,6 +207,13 @@ export function cellRGB(world: WorldState, i: number, out: Rgb): void {
   const retardant = layers.retardant.data[i];
   const fuelId = layers.fuel.data[i];
   const dry = FUEL_DRY[fuelId];
+
+  if (view !== 'terrain') {
+    dataView(world, i, view, fuelId, shade, out);
+    if (retardant > 0 && view !== 'intensity') blendRetardant(out, retardant);
+    clampRgb(out);
+    return;
+  }
 
   if (dry !== undefined) {
     const wet = FUEL_WET[fuelId];
@@ -181,13 +251,141 @@ export function cellRGB(world: WorldState, i: number, out: Rgb): void {
 
   // Slurry overlay: blend the base colour toward retardant rust by remaining
   // potency (0..255). A fresh drop reads strong; the line fades as it decays.
-  if (retardant > 0) {
-    const a = (retardant / 255) * 0.75; // cap so terrain still shows through
-    out.r = out.r * (1 - a) + RETARDANT_RGB.r * a;
-    out.g = out.g * (1 - a) + RETARDANT_RGB.g * a;
-    out.b = out.b * (1 - a) + RETARDANT_RGB.b * a;
-  }
+  if (retardant > 0) blendRetardant(out, retardant);
   clampRgb(out);
+}
+
+function blendRetardant(out: Rgb, retardant: number): void {
+  const a = (retardant / 255) * 0.75; // cap so terrain still shows through
+  out.r = out.r * (1 - a) + RETARDANT_RGB.r * a;
+  out.g = out.g * (1 - a) + RETARDANT_RGB.g * a;
+  out.b = out.b * (1 - a) + RETARDANT_RGB.b * a;
+}
+
+/** Flat class colours for the `fuel` view. */
+const FUEL_FLAT: Record<number, Rgb> = {
+  [Fuel.Nonburnable]: { r: 120, g: 118, b: 112 },
+  [Fuel.Grass]: { r: 214, g: 196, b: 92 },
+  [Fuel.Brush]: { r: 150, g: 128, b: 60 },
+  [Fuel.Timber]: { r: 48, g: 96, b: 52 },
+  [Fuel.CutLine]: { r: 220, g: 190, b: 130 },
+};
+const WATER_FLAT: Rgb = { r: 58, g: 96, b: 150 };
+
+/**
+ * Fireline-intensity heat ramp: log10(kW/m) from 1 (10 kW/m, a creeping
+ * surface fire) to 4 (10 000 kW/m, an active crown run): dark plum → red →
+ * orange → yellow → white.
+ */
+function heatRamp(kwPerM: number, out: Rgb): void {
+  const t = Math.min(1, Math.max(0, (Math.log10(Math.max(kwPerM, 1)) - 1) / 3));
+  if (t < 0.33) {
+    const k = t / 0.33;
+    out.r = lerp(60, 190, k);
+    out.g = lerp(20, 30, k);
+    out.b = lerp(70, 40, k);
+  } else if (t < 0.66) {
+    const k = (t - 0.33) / 0.33;
+    out.r = lerp(190, 255, k);
+    out.g = lerp(30, 150, k);
+    out.b = lerp(40, 30, k);
+  } else {
+    const k = (t - 0.66) / 0.34;
+    out.r = 255;
+    out.g = lerp(150, 250, k);
+    out.b = lerp(30, 220, k);
+  }
+}
+
+/** Unburned-cell colour for the data views (see {@link ViewMode}). */
+function dataView(world: WorldState, i: number, view: ViewMode, fuelId: number, shade: number, out: Rgb): void {
+  const { layers } = world;
+  const elev = layers.elevation.data[i];
+  const isWater = fuelId === Fuel.Nonburnable && elev <= 600;
+  switch (view) {
+    case 'fuel': {
+      const c = isWater ? WATER_FLAT : (FUEL_FLAT[fuelId] ?? FUEL_FLAT[Fuel.Nonburnable]);
+      const s = 0.8 + 0.2 * shade;
+      out.r = c.r * s;
+      out.g = c.g * s;
+      out.b = c.b * s;
+      return;
+    }
+    case 'moisture': {
+      if (isWater || fuelId === Fuel.Nonburnable) {
+        out.r = 80 * shade;
+        out.g = 80 * shade;
+        out.b = 84 * shade;
+        return;
+      }
+      // 0% brown → 15% (the Anderson Mx band) tan → 40%+ blue.
+      const m = layers.moisture.data[i] / 255;
+      const t = Math.min(1, m / 0.4);
+      if (t < 0.375) {
+        const k = t / 0.375;
+        out.r = lerp(150, 214, k);
+        out.g = lerp(80, 190, k);
+        out.b = lerp(30, 120, k);
+      } else {
+        const k = (t - 0.375) / 0.625;
+        out.r = lerp(214, 40, k);
+        out.g = lerp(190, 110, k);
+        out.b = lerp(120, 220, k);
+      }
+      const s = 0.75 + 0.25 * shade;
+      out.r *= s;
+      out.g *= s;
+      out.b *= s;
+      return;
+    }
+    case 'elevation': {
+      if (isWater) {
+        out.r = 50;
+        out.g = 90;
+        out.b = 150;
+        return;
+      }
+      // Hypsometric: low green → tan → brown → grey-white peaks, hillshaded.
+      const t = Math.min(1, Math.max(0, elev / 1000));
+      if (t < 0.5) {
+        const k = t / 0.5;
+        out.r = lerp(80, 200, k);
+        out.g = lerp(150, 180, k);
+        out.b = lerp(80, 110, k);
+      } else {
+        const k = (t - 0.5) / 0.5;
+        out.r = lerp(200, 235, k);
+        out.g = lerp(180, 232, k);
+        out.b = lerp(110, 228, k);
+      }
+      out.r *= shade;
+      out.g *= shade;
+      out.b *= shade;
+      return;
+    }
+    case 'canopy': {
+      if (isWater) {
+        out.r = 50;
+        out.g = 90;
+        out.b = 150;
+        return;
+      }
+      const c = layers.canopy.data[i] / 255;
+      out.r = lerp(200, 20, c) * shade;
+      out.g = lerp(190, 110, c) * shade;
+      out.b = lerp(150, 40, c) * shade;
+      return;
+    }
+    case 'intensity':
+    default: {
+      // Dim, desaturated ground so the heat ramp on the scar carries the view.
+      const base = isWater ? 40 : 70 + 40 * shade;
+      out.r = base;
+      out.g = base;
+      out.b = isWater ? 70 : base;
+      return;
+    }
+  }
 }
 
 function clampRgb(out: Rgb): void {
@@ -233,12 +431,17 @@ const GLOW_FAR_G = 4;
  * makes the fire read at a glance. Clamps manually because callers pass plain
  * `Uint8Array`s (the PNG exporter), which would wrap, not clamp.
  */
-export function renderRGBA(world: WorldState, rgba: Uint8Array | Uint8ClampedArray): void {
+export function renderRGBA(
+  world: WorldState,
+  rgba: Uint8Array | Uint8ClampedArray,
+  opts: RenderOptions = {},
+): void {
   const { width, height } = world;
+  const view = opts.view ?? 'terrain';
   const n = width * height;
   const rgb: Rgb = { r: 0, g: 0, b: 0 };
   for (let i = 0; i < n; i++) {
-    cellRGB(world, i, rgb);
+    cellRGB(world, i, rgb, view);
     const p = i * 4;
     rgba[p] = rgb.r;
     rgba[p + 1] = rgb.g;
@@ -246,12 +449,15 @@ export function renderRGBA(world: WorldState, rgba: Uint8Array | Uint8ClampedArr
     rgba[p + 3] = 255;
   }
 
-  // Glow post-pass: O(burning · 24), cheap next to the main loop.
+  // Glow post-pass: O(burning · 24), cheap next to the main loop. A crowning
+  // cell glows twice as strong — the whole stand is alight, not just the litter.
   const fire = world.layers.fire.data;
+  const crown = world.layers.crown.data;
   for (let i = 0; i < n; i++) {
     if (fire[i] !== FireState.Burning) continue;
     const x = i % width;
     const y = (i / width) | 0;
+    const boost = crown[i] === CrownFire.Active ? 2 : crown[i] === CrownFire.Passive ? 1.5 : 1;
     for (let dy = -2; dy <= 2; dy++) {
       const ny = y + dy;
       if (ny < 0 || ny >= height) continue;
@@ -261,8 +467,8 @@ export function renderRGBA(world: WorldState, rgba: Uint8Array | Uint8ClampedArr
         if (nx < 0 || nx >= width) continue;
         const ring = Math.max(Math.abs(dx), Math.abs(dy));
         const p = (ny * width + nx) * 4;
-        const dr = ring === 1 ? GLOW_NEAR_R : GLOW_FAR_R;
-        const dg = ring === 1 ? GLOW_NEAR_G : GLOW_FAR_G;
+        const dr = (ring === 1 ? GLOW_NEAR_R : GLOW_FAR_R) * boost;
+        const dg = (ring === 1 ? GLOW_NEAR_G : GLOW_FAR_G) * boost;
         const r = rgba[p] + dr;
         const g = rgba[p + 1] + dg;
         rgba[p] = r > 255 ? 255 : r;
