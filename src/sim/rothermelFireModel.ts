@@ -4,6 +4,8 @@ import type { IFuelModel } from '../models/IFuelModel';
 import type { RothermelFuel } from '../models/IFuelModel';
 import { byteToFraction } from '../core/moisture';
 import { deadFuelBed, fuelBed } from './anderson13';
+import { canopyCoverFraction, DEFAULT_CANOPY_STAND, type CanopyStand } from './canopyStand';
+import { windAdjustmentFactor } from './windAdjustment';
 import {
   btuPerFtSecToKwPerM,
   characteristicSAV,
@@ -22,6 +24,18 @@ const NDIST = [Math.SQRT2, 1, Math.SQRT2, 1, 1, Math.SQRT2, 1, Math.SQRT2];
 /** Default live-fuel moisture [fraction] — 100%, a green-but-not-peak baseline. */
 const DEFAULT_LIVE_MOISTURE = 1.0;
 
+/**
+ * What the world's `windU/windV` field means to this model.
+ *  - `'midflame'` (default, the Phase-2 §D3 convention): the layer already *is*
+ *    the wind at flame height; used as-is. Every existing test is authored this way.
+ *  - `'open'`: the layer is the **20-ft open wind** (what a forecast reports); the
+ *    model reduces it to midflame per cell with the Albini–Baughman wind adjustment
+ *    factor (`windAdjustment.ts`) — deep beds keep more of it, a tree canopy
+ *    shelters the surface fuel to a fraction. This is the physically honest
+ *    setting for a scenario authored from reported wind speeds.
+ */
+export type WindReference = 'midflame' | 'open';
+
 /** Construction options. A bare number is accepted as `liveMoisture` (legacy form). */
 export interface RothermelFireModelOptions {
   /**
@@ -31,6 +45,10 @@ export interface RothermelFireModelOptions {
    * live-bearing shrub models carry. A single value for both live herb and woody.
    */
   liveMoisture?: number;
+  /** See {@link WindReference}. Default `'midflame'`. */
+  windReference?: WindReference;
+  /** Canopy structure for wind sheltering (and crown fire). Default {@link DEFAULT_CANOPY_STAND}. */
+  canopy?: CanopyStand;
 }
 
 /**
@@ -78,9 +96,11 @@ export interface RothermelFireModelOptions {
  * sweep is order-independent and reproducible.
  *
  * Conventions (documented per plan §D2/§D3):
- *  - World wind (`windU/windV`) is treated as **midflame wind in m/s**, projected
- *    onto the spread direction. The real 20-ft-wind → midflame adjustment factor
- *    is a future refinement, not Phase 2.
+ *  - World wind (`windU/windV`) is in m/s, projected onto the spread direction.
+ *    By default it is read as **midflame** wind (§D3); with `windReference:
+ *    'open'` it is the 20-ft open wind and is reduced to midflame per cell by the
+ *    Albini–Baughman wind adjustment factor (fuel-bed depth + canopy sheltering).
+ *    See {@link WindReference}.
  *  - Slope is rise/run from the elevation grid, **clamped ≥ 0** — Rothermel's
  *    slope factor is upslope-only (it squares `tan φ`).
  */
@@ -94,6 +114,8 @@ export class RothermelFireModel implements IFireModel {
   private readonly residenceSecById = new Map<number, number>();
 
   private readonly liveMoisture: number;
+  private readonly windReference: WindReference;
+  private readonly canopy: CanopyStand;
 
   constructor(
     private readonly fuel: IFuelModel,
@@ -101,6 +123,23 @@ export class RothermelFireModel implements IFireModel {
   ) {
     const o: RothermelFireModelOptions = typeof opts === 'number' ? { liveMoisture: opts } : opts;
     this.liveMoisture = o.liveMoisture ?? DEFAULT_LIVE_MOISTURE;
+    this.windReference = o.windReference ?? 'midflame';
+    this.canopy = o.canopy ?? DEFAULT_CANOPY_STAND;
+  }
+
+  /**
+   * Factor that turns this cell's world wind into midflame wind: 1 under the
+   * `'midflame'` convention, else the Albini–Baughman WAF for the cell's fuel-bed
+   * depth and the canopy over it.
+   */
+  private midflameFactor(rf: RothermelFuel, canopyByte: number): number {
+    if (this.windReference === 'midflame') return 1;
+    return windAdjustmentFactor(
+      rf.depth,
+      canopyCoverFraction(canopyByte),
+      this.canopy.standHeightM,
+      this.canopy.crownRatio,
+    );
   }
 
   step(world: WorldState, dt: number): void {
@@ -111,6 +150,7 @@ export class RothermelFireModel implements IFireModel {
     const moist = layers.moisture.data;
     const windU = layers.windU.data;
     const windV = layers.windV.data;
+    const canopyL = layers.canopy.data;
     const burnElapsed = layers.burnElapsed.data;
     const intensity = layers.intensity.data;
 
@@ -138,7 +178,7 @@ export class RothermelFireModel implements IFireModel {
           // once, so every burning cell carries a defined value for readers.
           if (intensity[i] === 0 && rf) {
             const bed = fuelBed(rf, byteToFraction(moist[i]), this.liveMoisture);
-            const speed = Math.hypot(windU[i], windV[i]);
+            const speed = Math.hypot(windU[i], windV[i]) * this.midflameFactor(rf, canopyL[i]);
             const r = surfaceSpread(bed, { midflameWind: metersPerSecToFtPerMin(speed), tanSlope: 0 });
             intensity[i] = btuPerFtSecToKwPerM(r.firelineIntensity);
           }
@@ -171,8 +211,11 @@ export class RothermelFireModel implements IFireModel {
         if (!hasSource) continue;
 
         const bed = fuelBed(rf, byteToFraction(moist[i]), this.liveMoisture);
-        const wu = windU[i];
-        const wv = windV[i];
+        // Wind sampled at THIS (destination) cell — see world.ts windU/windV — and
+        // reduced to midflame here, once, since the factor is a property of the cell.
+        const waf = this.midflameFactor(rf, canopyL[i]);
+        const wu = windU[i] * waf;
+        const wv = windV[i] * waf;
 
         let maxRate = 0; // max ROS_dir / (dist·cellSize)  [1/s]
         let best: SpreadResult | null = null; // the fire behaviour along that direction
