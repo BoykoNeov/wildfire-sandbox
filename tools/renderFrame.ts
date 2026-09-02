@@ -1,29 +1,22 @@
 /**
  * Headless frame exporter — runs the real sim and writes a PNG using the SAME
- * shared palette the canvas renderer uses. This mirrors `main.ts`'s pipeline
- * (terrain gen -> uniform weather -> Rothermel ROS fire -> colour mapping)
- * without a browser, so the output is honest evidence of what the sandbox draws.
- * Includes the Phase-3 fuel-moisture system, dynamic (shifting, gusty) wind,
- * spotting, and a Phase-4 ground crew cutting a containment line
- * (weather -> moisture -> suppression -> fire -> spotting).
+ * shared palette the canvas renderer uses, built by the SAME `loadScenario` the
+ * browser entry uses. So the output is honest evidence of what the sandbox draws.
  *
- * Run: npx vite-node tools/renderFrame.ts
+ * Run: npm run frame [-- <preset-id> [steps]]        (default: shifting-winds, 2000)
+ *      npx vite-node tools/renderFrame.ts timber-crown-run 3600
+ *
+ * On top of the preset it issues a fixed set of Phase-4 orders (a crew line, an
+ * engine station with a reload cycle, one retardant drop) so the frame also shows
+ * every suppression layer rendering. The mechanics are proven headlessly by the
+ * tests; this is the smoke check.
  */
 import { deflateSync } from 'node:zlib';
 import { writeFileSync } from 'node:fs';
-import { createWorld, type WorldState } from '../src/core/world';
-import { Simulation } from '../src/core/simulation';
-import { generateTerrain, igniteNearestBurnable } from '../src/gen/terrain';
-import { TerrainFuelModel } from '../src/sim/terrainFuelModel';
-import { DynamicWeatherProvider } from '../src/sim/dynamicWeather';
-import { FuelMoistureSystem } from '../src/sim/fuelMoistureSystem';
-import { RothermelFireModel } from '../src/sim/rothermelFireModel';
-import { SpottingSystem } from '../src/sim/spottingSystem';
-import { GroundCrew } from '../src/sim/groundCrew';
-import { Engine } from '../src/sim/engine';
-import { Aircraft } from '../src/sim/aircraft';
-import { RetardantSystem } from '../src/sim/retardantSystem';
+import type { WorldState } from '../src/core/world';
 import { renderRGBA } from '../src/render/palette';
+import { loadScenario } from '../src/scenario/scenario';
+import { findPreset, DEFAULT_PRESET_ID, PRESETS } from '../src/scenario/presets';
 
 const CRC_TABLE: Uint32Array = (() => {
   const t = new Uint32Array(256);
@@ -78,73 +71,30 @@ function renderToRgba(world: WorldState): Uint8Array {
   return rgba;
 }
 
-const WIDTH = 256;
-const HEIGHT = 256;
-const SEED = 1337;
-// Rothermel ROS on 30 m cells is metres/min, so a visible burn scar needs far
-// more sim-seconds than the Phase-1 CA did.
-const STEPS = 2000;
+const presetId = process.argv[2] ?? DEFAULT_PRESET_ID;
+const preset = findPreset(presetId);
+if (!preset) {
+  console.error(`unknown preset "${presetId}" — one of: ${PRESETS.map((p) => p.id).join(', ')}`);
+  process.exit(1);
+}
+const STEPS = Number(process.argv[3] ?? 2000);
 
-const world = createWorld({ width: WIDTH, height: HEIGHT, seed: SEED });
-generateTerrain(world);
-igniteNearestBurnable(world, WIDTH >> 1, HEIGHT >> 1);
+const { world, sim, crew, engine, aircraft } = loadScenario(preset);
+const cx = world.width >> 1;
+const cy = world.height >> 1;
 
-// Phase-4 4a: a ground crew cutting a vertical containment line east of the
-// ignition, so `frame.png` is honest evidence a line gets drawn (tan scratch) and
-// holds. The crew starts at the line's north end and cuts southward, order by order.
-const crewFuel = new TerrainFuelModel();
-const LINE_X = (WIDTH >> 1) + 24;
-const LINE_Y0 = (HEIGHT >> 1) - 40;
-const crew = new GroundCrew(crewFuel, { x: LINE_X, y: LINE_Y0 });
-for (let y = LINE_Y0; y < LINE_Y0 + 80; y++) crew.orderCutLine(LINE_X, y);
+// Phase-4 4a: a crew cutting a vertical containment line east of centre, so the
+// frame shows a line (tan scratch) being built and holding.
+if (crew) for (let y = cy - 40; y < cy + 40; y++) crew.orderCutLine(cx + 24, y);
+// Phase-4 4b: an engine holding a station on the southern flank with its finite
+// tank — the run exercises the whole reload cycle in the real pipeline.
+engine?.orderDirectAttack(cx + 8, cy + 30);
+// Phase-4 4c: one retardant drop north-east of centre — shows the `retardant`
+// layer rendering (a slurry square, fading as RetardantSystem decays it).
+aircraft?.orderRetardantDrop(cx + 30, cy - 24);
 
-// Phase-4 4b: an engine holding a station on the fire's southern flank with its
-// finite tank, refilling from a staging point to the west — so the 2000-step run
-// exercises the whole reload cycle in the real pipeline (weather → moisture →
-// suppression → fire → spotting). Its wet knockdown leaves an unburned notch in the
-// scar; while it is off refilling, the notch dries and the front creeps back — honest
-// headless evidence the tank is finite.
-const engine = new Engine({
-  x: (WIDTH >> 1) + 8,
-  y: (HEIGHT >> 1) + 30,
-  refillX: (WIDTH >> 1) - 60,
-  refillY: (HEIGHT >> 1) + 30,
-});
-engine.orderDirectAttack((WIDTH >> 1) + 8, (HEIGHT >> 1) + 30);
-
-// Phase-4 4c: an air tanker lays a retardant drop north-east of the ignition — a
-// persistent rust-red pre-treatment on unburned fuel. This is a SMOKE CHECK: it shows
-// the `retardant` layer renders (a slurry square, fading as RetardantSystem decays it)
-// in the real pipeline. The hold/flank/crown-falloff *behaviour* is pinned headlessly
-// by `tests/aircraft.test.ts`, not by this frame. Based at a strip north-west of the
-// fire, it flies out once, drops, and returns to reload.
-const aircraft = new Aircraft({ x: (WIDTH >> 1) - 60, y: (HEIGHT >> 1) - 60 });
-aircraft.orderRetardantDrop((WIDTH >> 1) + 30, (HEIGHT >> 1) - 24);
-const retardantField = new RetardantSystem();
-
-const sim = new Simulation(world, [
-  // Same dynamic wind as main.ts: shifts NE → N → NW over 30 sim-minutes, gusty.
-  new DynamicWeatherProvider(
-    [
-      { time: 0, u: 1.6, v: 0.7 },
-      { time: 900, u: 0.2, v: 1.4 },
-      { time: 1800, u: -1.5, v: 1.0 },
-    ],
-    { temperatureC: 30, relativeHumidity: 20, rainRate: 0, gust: { seed: SEED, speedAmp: 0.4, dirAmp: 0.35 } },
-  ),
-  new FuelMoistureSystem(),
-  // Suppression sits after moisture, before fire (weather → moisture → suppression
-  // → fire → spotting) so a same-tick line/backburn is honoured by the fire model.
-  crew,
-  engine,
-  aircraft,
-  retardantField,
-  new RothermelFireModel(new TerrainFuelModel()),
-  // Spotting runs after the fire model (additive `fire`-layer co-writer).
-  new SpottingSystem(new TerrainFuelModel()),
-]);
 sim.run(STEPS, 1);
 
 const out = 'frame.png';
-writeFileSync(out, encodePng(WIDTH, HEIGHT, renderToRgba(world)));
-console.log(`wrote ${out} — ${WIDTH}x${HEIGHT}, ${STEPS} steps, seed ${SEED}`);
+writeFileSync(out, encodePng(world.width, world.height, renderToRgba(world)));
+console.log(`wrote ${out} — ${preset.id}, ${world.width}x${world.height}, ${STEPS} steps, seed ${preset.seed}`);

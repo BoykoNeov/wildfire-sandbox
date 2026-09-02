@@ -63,6 +63,14 @@ export const CROWN_WIND_REDUCTION = 0.4;
 export const CRITICAL_MASS_FLOW = 0.05;
 /** Heat of combustion of canopy fuel [kJ/kg] (Finney 1998 / FARSITE default). */
 export const CANOPY_HEAT_CONTENT = 18000;
+/**
+ * Canopy bulk density below which a cell has no tree crown to burn [kg/m³].
+ * Open timber runs ~0.05–0.1; a shrub canopy byte (brush ≈ 40/255 × 0.25 ≈
+ * 0.04) stays under it on purpose — shrub crowns ARE the surface fuel bed, the
+ * Anderson shrub models already burn them, so the tree-crown model must not
+ * double-count them.
+ */
+export const MIN_CROWN_CBD = 0.05;
 
 /**
  * Van Wagner (1977) critical surface intensity for crown initiation I_0 [kW/m].

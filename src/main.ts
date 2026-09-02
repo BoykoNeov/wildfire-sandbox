@@ -1,111 +1,19 @@
-import { createWorld } from './core/world';
-import { Simulation } from './core/simulation';
-import { generateTerrain, igniteNearestBurnable } from './gen/terrain';
-import { TerrainFuelModel } from './sim/terrainFuelModel';
-import { DynamicWeatherProvider } from './sim/dynamicWeather';
-import { FuelMoistureSystem } from './sim/fuelMoistureSystem';
-import { RothermelFireModel } from './sim/rothermelFireModel';
-import { SpottingSystem } from './sim/spottingSystem';
-import { GroundCrew } from './sim/groundCrew';
-import { Engine } from './sim/engine';
-import { Aircraft } from './sim/aircraft';
-import { RetardantSystem } from './sim/retardantSystem';
 import { CanvasRenderer } from './render/canvasRenderer';
 import { TerrainEditor } from './editor/terrainEditor';
 import { SuppressionCommand } from './editor/suppressionCommand';
+import { loadScenario } from './scenario/scenario';
+import { findPreset, DEFAULT_PRESET_ID } from './scenario/presets';
 
-const WIDTH = 256;
-const HEIGHT = 256;
-const SEED = 1337;
 const DT = 1; // seconds of simulated time per step
-const STEPS_PER_FRAME = 2; // Rothermel ROS on 30 m cells is slow; advance a touch faster.
 
-// World state (plain data) + a seeded RNG from the very first frame.
-const world = createWorld({ width: WIDTH, height: HEIGHT, seed: SEED });
-generateTerrain(world);
-// Light the nearest burnable cell to centre so the demo never lands on water/rock.
-igniteNearestBurnable(world, WIDTH >> 1, HEIGHT >> 1);
-
-// Systems talk only through the data layers, never to each other. The Phase-2
-// pair: Anderson 13 fuels feeding the Rothermel ROS fire model. Terrain's generic
-// fuel ids (Grass/Brush/Timber) are remapped onto representative Anderson models
-// (FM1/FM6/FM9) by `TerrainFuelModel` — see that module for the choices. Timber is
-// no longer mis-served as tall grass. `CaFireModel`/`BasicFuelModel` remain in the
-// tree as the Phase-1 reference (and back the determinism test).
-const fuel = new TerrainFuelModel();
-// Phase-3 dynamic wind (plan §"time-varying wind"). Midflame wind in m/s (plan §D3)
-// that SHIFTS over the run — the headline event: it starts blowing ~NE, swings
-// through calm, and settles blowing ~NW over 30 simulated minutes, so whichever
-// flank is dangerous flips mid-scenario (Handoff §4.3). A drifting gust field
-// makes the wind spatially varied — which is what makes the destination-cell
-// sampling convention load-bearing (see world.ts windU/windV). Ambient drivers
-// (dry, no rain) feed the Phase-3 fuel-moisture dynamics.
-const weather = new DynamicWeatherProvider(
-  [
-    { time: 0, u: 1.6, v: 0.7 }, // blowing toward NE
-    { time: 900, u: 0.2, v: 1.4 }, // swinging north…
-    { time: 1800, u: -1.5, v: 1.0 }, // …settling toward NW
-  ],
-  {
-    temperatureC: 30,
-    relativeHumidity: 20,
-    rainRate: 0,
-    gust: { seed: SEED, speedAmp: 0.4, dirAmp: 0.35 },
-  },
-);
-// Phase 3: dead-fuel moisture evolves toward EMC each tick. Ordered weather →
-// moisture → fire so the fire model reads the freshly-updated moisture. Writes the
-// moisture layer only; systems talk through layers (Handoff §3.1).
-const moisture = new FuelMoistureSystem();
-const fire = new RothermelFireModel(fuel);
-// Phase 4 (4a): a player-commanded ground crew. Ordered weather → moisture →
-// SUPPRESSION → fire → spotting (load-bearing, per each agent's header): a
-// knockdown must land in the moisture layer after the drydown step and before the
-// fire model reads it this tick, and a backburn must ignite in time to spread this
-// tick. Layer-only, like spotting — it never touches the fire model's private
-// progress. Player orders come from the browser command shell below (deterministic
-// execution, non-deterministic commanding — outside the determinism test).
-const crew = new GroundCrew(fuel, { x: WIDTH >> 1, y: (HEIGHT >> 1) + 24 });
-// Phase 4 (4b): a player-commanded engine — the crew's travel/work substrate plus a
-// FINITE water tank. Direct attack lays a wider, wetter knockdown than the hand
-// crew but draws the tank down; when dry it drives to a static refill point, tops
-// up, and resumes the same station (the §4.4 reload cycle). Same suppression band
-// as the crew (weather → moisture → SUPPRESSION → fire → spotting), layer-only —
-// its only world write is a `moisture` spike on unburned fuel. Refill point defaults
-// to its spawn cell (a staging area west of the ignition).
-const engine = new Engine({ x: (WIDTH >> 1) - 40, y: (HEIGHT >> 1) + 24 });
-// Phase 4 (4c): a player-commanded air tanker — the shared travel substrate (flying,
-// so terrain-independent) plus discrete passes: fly out, lay one drop over a wide
-// footprint, return to base, reload. Two loads: WATER (a big, temporary moisture
-// knockdown) and RETARDANT (a persistent pre-treatment written to the `retardant`
-// layer). Effectiveness falls off on an active crown run (canopy × flaming activity),
-// the §4.4 lesson: a drop on a flaming timber crown is near-useless. Same suppression
-// band, layer-only. Its base (reload point) is a staging strip north-west of the fire.
-const aircraft = new Aircraft({ x: (WIDTH >> 1) - 40, y: (HEIGHT >> 1) - 40 });
-// Phase 4 (4c): the retardant persistence substrate. Owns the `retardant` layer — a
-// plain System, not a model seam — decaying each treated cell on retardant's own slow
-// schedule and re-pinning `moisture` from it every tick for the whole duration (long
-// after the aircraft has flown home). The fire model is never told about retardant; it
-// only ever reads `moisture`, so the layer-only spine holds. Ordered in the suppression
-// band AFTER the aircraft (honour a same-tick drop) and after moisture (override this
-// tick's drydown), before fire.
-const retardantField = new RetardantSystem();
-// Phase 3: spotting. Burning cells throw embers downwind that jump ahead of the
-// front (and across firebreaks). Ordered AFTER the fire model — it is an additive
-// co-writer of the `fire` layer, layering ember ignitions on top of surface
-// spread (see SpottingSystem for the contract). Reads the same fuel catalogue for
-// landing-cell reception; talks only through layers (Handoff §3.1).
-const spotting = new SpottingSystem(fuel);
-const sim = new Simulation(world, [
-  weather,
-  moisture,
-  crew,
-  engine,
-  aircraft,
-  retardantField,
-  fire,
-  spotting,
-]);
+// Pick the scenario from the URL (?scenario=<id>) so a unit is linkable; the
+// default is the original shifting-winds demo. `loadScenario` is the single
+// pipeline builder shared with the headless exporter, so the browser and
+// `npm run frame` can never drift apart (Phase-5 plan decision #4).
+const params = new URLSearchParams(window.location.search);
+const preset = findPreset(params.get('scenario') ?? DEFAULT_PRESET_ID) ?? findPreset(DEFAULT_PRESET_ID)!;
+const loaded = loadScenario(preset);
+const { world, sim, crew, engine, aircraft } = loaded;
 
 // Rendering reads world state but never drives the sim.
 const canvas = document.getElementById('view') as HTMLCanvasElement;
@@ -116,20 +24,31 @@ const renderer = new CanvasRenderer(canvas, world);
 // you can author terrain without the front advancing.
 const editor = new TerrainEditor(canvas, world);
 
-// Phase-4 command shell: click/drag issues orders to the crew (cut line, backburn,
-// direct attack). Browser-only, like the editor; it enqueues orders and draws the
-// crew marker — it never writes world state itself. Shares the canvas with the
-// editor via capture-phase pointer handling (see SuppressionCommand).
-const command = new SuppressionCommand(canvas, world, crew, engine, aircraft);
+// Phase-4 command shell: click/drag issues orders to the units (cut line, backburn,
+// direct attack, engine station, aerial drops). Browser-only, like the editor; it
+// enqueues orders and draws the unit markers — it never writes world state itself.
+const command = crew ? new SuppressionCommand(canvas, world, crew, engine ?? undefined, aircraft ?? undefined) : null;
 
-function frame(): void {
+// Pace the sim by wall clock: `timeScale` sim-seconds per real second, whatever the
+// display refresh rate. Rothermel ROS on 30 m cells is metres per minute, so the
+// demo runs at 60–120× real time to be watchable.
+const timeScale = preset.timeScale ?? 120;
+let last = performance.now();
+let carry = 0;
+
+function frame(now: number): void {
+  const elapsed = Math.min(0.25, (now - last) / 1000); // clamp a background-tab jump
+  last = now;
   if (!editor.paused) {
-    for (let i = 0; i < STEPS_PER_FRAME; i++) sim.step(DT);
+    carry += elapsed * timeScale;
+    const steps = Math.min(600, Math.floor(carry / DT));
+    for (let i = 0; i < steps; i++) sim.step(DT);
+    carry -= steps * DT;
   }
   // Always render, even when paused, so brush strokes appear immediately.
   renderer.render(world);
-  // Overlay the crew marker on top of the freshly-drawn frame.
-  command.render();
+  // Overlay the unit markers on top of the freshly-drawn frame.
+  command?.render();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

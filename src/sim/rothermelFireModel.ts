@@ -14,6 +14,7 @@ import { unshelteredWaf, windAdjustmentFactor } from './windAdjustment';
 import {
   CROWN_WIND_REDUCTION,
   CrownFire,
+  MIN_CROWN_CBD,
   evaluateCrownFire,
   type CrownInputs,
   type CrownResult,
@@ -37,8 +38,6 @@ const NDIST = [Math.SQRT2, 1, Math.SQRT2, 1, 1, Math.SQRT2, 1, Math.SQRT2];
 
 /** Default live-fuel moisture [fraction] — 100%, a green-but-not-peak baseline. */
 const DEFAULT_LIVE_MOISTURE = 1.0;
-/** Canopy bulk density below which a cell has no crown to burn [kg/m³] (grass ≈ 0.01). */
-const MIN_CROWN_CBD = 0.02;
 /** Rothermel-1991's crown proxy fuel bed: Anderson FM10. */
 const FM10 = ANDERSON_13.get(10)!;
 

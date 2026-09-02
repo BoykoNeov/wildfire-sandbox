@@ -55,10 +55,24 @@ function fbm(octaves: ValueNoise[], u: number, v: number): number {
 }
 
 export interface TerrainOptions {
-  /** Below this elevation fraction = water (nonburnable). */
+  /** Below this elevation fraction = water (nonburnable). Default 0.3. */
   waterLevel?: number;
-  /** Above this elevation fraction = bare rock (nonburnable). */
+  /** Above this elevation fraction = bare rock (nonburnable). Default 0.82. */
   rockLevel?: number;
+  /**
+   * Fuel banding by position within the burnable elevation band (0..1): grass
+   * below `grass`, brush below `brush`, timber above. Defaults 0.4 / 0.75. A
+   * grassland unit sets both high; a timber unit sets both low.
+   */
+  grassBand?: number;
+  brushBand?: number;
+  /**
+   * Dead-fuel moisture byte range painted on burnable cells (linear 0..255 ↔
+   * 0..1, `core/moisture.ts`). Defaults 6..52 (≈2–20%) — the §D6 lever: tune the
+   * bytes here, never the byte↔fraction meaning.
+   */
+  moistureMin?: number;
+  moistureMax?: number;
 }
 
 /**
@@ -70,6 +84,10 @@ export function generateTerrain(world: WorldState, opts: TerrainOptions = {}): v
   const { width, height, rng, layers } = world;
   const waterLevel = opts.waterLevel ?? 0.3;
   const rockLevel = opts.rockLevel ?? 0.82;
+  const grassBand = opts.grassBand ?? 0.4;
+  const brushBand = opts.brushBand ?? 0.75;
+  const moistureMin = opts.moistureMin ?? 6;
+  const moistureMax = opts.moistureMax ?? 52;
 
   const octaves = [
     new ValueNoise(rng, 4, 4),
@@ -102,15 +120,20 @@ export function generateTerrain(world: WorldState, opts: TerrainOptions = {}): v
         moist[i] = 40;
       } else {
         const band = (e - waterLevel) / (rockLevel - waterLevel); // 0..1
-        if (band < 0.4) fuel[i] = Fuel.Grass;
-        else if (band < 0.75) fuel[i] = Fuel.Brush;
+        if (band < grassBand) fuel[i] = Fuel.Grass;
+        else if (band < brushBand) fuel[i] = Fuel.Brush;
         else fuel[i] = Fuel.Timber;
-        canopy[i] = fuel[i] === Fuel.Timber ? 200 : fuel[i] === Fuel.Brush ? 90 : 10;
+        // Canopy byte = tree-overstory cover/bulk-density proxy. Timber has a real
+        // overstory (shelters the surface wind, can crown, throws brands); brush is
+        // its OWN fuel bed — shrub crowns are the surface fire — so it stays below
+        // the wind-sheltering threshold (`windAdjustment.ts`, cover < 0.3) and the
+        // crown-fire floor (`crownFire.ts` MIN_CROWN_CBD). Grass barely has any.
+        canopy[i] = fuel[i] === Fuel.Timber ? 200 : fuel[i] === Fuel.Brush ? 40 : 10;
         // Dead-fuel moisture byte (linear 0..255 ↔ 0..1, see core/moisture.ts).
-        // 6..52 ≈ 2.4%–20%: a dry range that mostly sits below the Anderson Mx
-        // (FM1 0.12 / FM2 0.15 / FM3 0.25) so the Rothermel front can carry. This
+        // Default 6..52 ≈ 2.4%–20%: a dry range that mostly sits below the Anderson
+        // Mx (FM1 0.12 / FM2 0.15 / FM3 0.25) so the Rothermel front can carry. This
         // is the §D6 lever — tune the *bytes* here, never the byte↔fraction meaning.
-        moist[i] = Math.round(6 + moistNoise.sample(u, v) * 46); // 6..52
+        moist[i] = Math.round(moistureMin + moistNoise.sample(u, v) * (moistureMax - moistureMin));
       }
     }
   }

@@ -29,16 +29,41 @@ export interface GustOptions {
   drift?: number;
 }
 
+/**
+ * An ambient-driver keyframe: at `time` seconds the map-wide temperature,
+ * humidity and rain hold these values. Linearly interpolated like wind, so a
+ * scenario can author a weather front (RH climbing, temperature falling, a rain
+ * pulse arriving and clearing) as a handful of rows.
+ */
+export interface AmbientKeyframe {
+  /** Simulated seconds at which these drivers hold. */
+  time: number;
+  /** Air temperature, °C. */
+  temperatureC: number;
+  /** Relative humidity, percent 0..100. */
+  relativeHumidity: number;
+  /** Precipitation rate, mm/hr. */
+  rainRate: number;
+}
+
 export interface DynamicWeatherOptions {
-  /** Air temperature, °C (constant). Default 25. */
+  /** Air temperature, °C (constant). Default 25. Ignored when `ambient` is given. */
   temperatureC?: number;
-  /** Relative humidity, percent (constant). Default 40. */
+  /** Relative humidity, percent (constant). Default 40. Ignored when `ambient` is given. */
   relativeHumidity?: number;
-  /** Precipitation rate, mm/hr (constant). Default 0. */
+  /** Precipitation rate, mm/hr (constant). Default 0. Ignored when `ambient` is given. */
   rainRate?: number;
+  /**
+   * Time-varying ambient drivers (≥1 keyframe), interpolated exactly as the wind
+   * keyframes are. Overrides the three constants above.
+   */
+  ambient?: AmbientKeyframe[];
   /** Spatial gust field. Omit for a spatially-uniform (mean-only) time-varying wind. */
   gust?: GustOptions;
 }
+
+/** Cells per gust sample along each axis (see the gust loop in `step`). */
+const GUST_BLOCK = 4;
 
 function smooth(t: number): number {
   return t * t * (3 - 2 * t);
@@ -91,6 +116,10 @@ class PeriodicNoise {
  * event — "a shift flips which flank is dangerous" (§4.3): author a shift as two
  * keyframes and the front reorganizes around it. Fully reproducible.
  *
+ * **Ambient drivers** (temperature, humidity, rain) are either constants or a
+ * second list of keyframes ({@link AmbientKeyframe}) interpolated the same way —
+ * a weather front is authored as a few rows and the moisture system does the rest.
+ *
  * **Gusts (spatial)** are an optional drifting coherent-noise perturbation of that
  * mean — speed varies multiplicatively, direction additively, per cell. This is
  * what makes the destination-vs-source wind-sampling convention *load-bearing*
@@ -106,9 +135,7 @@ export class DynamicWeatherProvider implements IWeatherProvider {
   readonly name = 'weather:dynamic';
 
   private readonly keyframes: WindKeyframe[];
-  private readonly temperatureC: number;
-  private readonly relativeHumidity: number;
-  private readonly rainRate: number;
+  private readonly ambient: AmbientKeyframe[];
 
   private readonly gust: Required<GustOptions> | null;
   private readonly noiseSpeed: PeriodicNoise | null;
@@ -125,9 +152,23 @@ export class DynamicWeatherProvider implements IWeatherProvider {
         throw new Error(`DynamicWeatherProvider: duplicate keyframe time ${this.keyframes[i].time}`);
       }
     }
-    this.temperatureC = opts.temperatureC ?? 25;
-    this.relativeHumidity = opts.relativeHumidity ?? 40;
-    this.rainRate = opts.rainRate ?? 0;
+    // Constant drivers are just a single ambient keyframe (held flat forever).
+    const ambient = opts.ambient?.length
+      ? [...opts.ambient].sort((a, b) => a.time - b.time)
+      : [
+          {
+            time: 0,
+            temperatureC: opts.temperatureC ?? 25,
+            relativeHumidity: opts.relativeHumidity ?? 40,
+            rainRate: opts.rainRate ?? 0,
+          },
+        ];
+    for (let i = 1; i < ambient.length; i++) {
+      if (ambient[i].time === ambient[i - 1].time) {
+        throw new Error(`DynamicWeatherProvider: duplicate ambient keyframe time ${ambient[i].time}`);
+      }
+    }
+    this.ambient = ambient;
 
     if (opts.gust) {
       this.gust = {
@@ -165,14 +206,36 @@ export class DynamicWeatherProvider implements IWeatherProvider {
     return { u: last.u, v: last.v }; // unreachable; keeps the compiler happy
   }
 
+  /** Interpolate the ambient drivers at time `t` straight into `world.env`. */
+  private writeAmbient(world: WorldState, t: number): void {
+    const kf = this.ambient;
+    const env = world.env;
+    let a = kf[0];
+    let b = kf[0];
+    let f = 0;
+    if (t >= kf[kf.length - 1].time) {
+      a = b = kf[kf.length - 1];
+    } else if (t > kf[0].time) {
+      for (let i = 1; i < kf.length; i++) {
+        if (t <= kf[i].time) {
+          a = kf[i - 1];
+          b = kf[i];
+          f = (t - a.time) / (b.time - a.time);
+          break;
+        }
+      }
+    }
+    env.temperatureC = lerp(a.temperatureC, b.temperatureC, f);
+    env.relativeHumidity = lerp(a.relativeHumidity, b.relativeHumidity, f);
+    env.rainRate = lerp(a.rainRate, b.rainRate, f);
+  }
+
   step(world: WorldState, _dt: number): void {
     const { width, height, layers } = world;
     const t = world.clock.time;
     const { u: mu, v: mv } = this.meanWind(t);
 
-    world.env.temperatureC = this.temperatureC;
-    world.env.relativeHumidity = this.relativeHumidity;
-    world.env.rainRate = this.rainRate;
+    this.writeAmbient(world, t);
 
     const windU = layers.windU.data;
     const windV = layers.windV.data;
@@ -186,24 +249,37 @@ export class DynamicWeatherProvider implements IWeatherProvider {
 
     // Gusts perturb the mean per cell. Decompose the mean once, then modulate
     // speed multiplicatively and direction additively from the drifting lattice.
+    // The lattice spans only ~`scale` cells across the whole map, so sampling it
+    // once per GUST_BLOCK×GUST_BLOCK block (and filling the block) is visually
+    // identical and ~16× cheaper than two noise samples + a sin/cos per cell —
+    // this was the most expensive system in the pipeline. Still deterministic.
     const meanSpeed = Math.hypot(mu, mv);
     const meanDir = Math.atan2(mv, mu); // 0 if calm — gusts then modulate nothing
     const { speedAmp, dirAmp, scale, drift } = this.gust;
     const nS = this.noiseSpeed!;
     const nD = this.noiseDir!;
     const shift = drift * t; // lattice-space drift → gusts travel over time
+    const B = GUST_BLOCK;
 
-    for (let y = 0; y < height; y++) {
-      const ly = (y / height) * scale + shift;
-      for (let x = 0; x < width; x++) {
-        const i = y * width + x;
-        const lx = (x / width) * scale + shift;
+    for (let by = 0; by < height; by += B) {
+      const ly = (by / height) * scale + shift;
+      const yEnd = Math.min(height, by + B);
+      for (let bx = 0; bx < width; bx += B) {
+        const lx = (bx / width) * scale + shift;
         const s = (nS.sample(lx, ly) - 0.5) * 2; // [-1, 1)
         const d = (nD.sample(lx, ly) - 0.5) * 2; // [-1, 1)
         const speed = meanSpeed * (1 + speedAmp * s);
         const dir = meanDir + dirAmp * d;
-        windU[i] = speed * Math.cos(dir);
-        windV[i] = speed * Math.sin(dir);
+        const u = speed * Math.cos(dir);
+        const v = speed * Math.sin(dir);
+        const xEnd = Math.min(width, bx + B);
+        for (let y = by; y < yEnd; y++) {
+          const row = y * width;
+          for (let x = bx; x < xEnd; x++) {
+            windU[row + x] = u;
+            windV[row + x] = v;
+          }
+        }
       }
     }
   }

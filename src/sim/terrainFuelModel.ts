@@ -35,20 +35,41 @@ export const TERRAIN_TO_ANDERSON: ReadonlyMap<number, number> = new Map([
   [Fuel.Timber, 9],
 ]);
 
+/** Which Anderson model (1–13) each generic terrain fuel class resolves to. */
+export interface TerrainFuelMapping {
+  grass: number;
+  brush: number;
+  timber: number;
+}
+
+/** The default mapping (see the module header): FM1 / FM6 / FM9. */
+export const DEFAULT_TERRAIN_FUEL_MAPPING: Readonly<TerrainFuelMapping> = {
+  grass: TERRAIN_TO_ANDERSON.get(Fuel.Grass)!,
+  brush: TERRAIN_TO_ANDERSON.get(Fuel.Brush)!,
+  timber: TERRAIN_TO_ANDERSON.get(Fuel.Timber)!,
+};
+
 export class TerrainFuelModel implements IFuelModel {
-  // Precomputed FuelParams indexed by terrain id (0..3): the mapping is fixed, so
-  // resolve it once and keep the per-cell hot-loop lookup a plain array read.
+  // Precomputed FuelParams indexed by terrain id (0..4): the mapping is fixed per
+  // instance, so resolve it once and keep the per-cell hot-loop lookup a plain
+  // array read.
   private readonly table: FuelParams[] = [];
 
-  constructor() {
+  /**
+   * @param mapping Anderson numbers for the three terrain classes. A scenario can
+   * remap them (e.g. Timber → FM10, Brush → FM4 chaparral for a crown-fire unit)
+   * without touching the fuel layer, the palette or the editor.
+   */
+  constructor(mapping: TerrainFuelMapping = DEFAULT_TERRAIN_FUEL_MAPPING) {
     const anderson = new Anderson13FuelModel();
-    // CutLine (Phase 4) is not in TERRAIN_TO_ANDERSON, so it falls through to
-    // Anderson id 0 = nonburnable — a control line is a barrier to the Rothermel
-    // model exactly as it is to the CA path, keeping the id purely a palette concern.
-    const ids = [Fuel.Nonburnable, Fuel.Grass, Fuel.Brush, Fuel.Timber, Fuel.CutLine];
-    for (const id of ids) {
-      this.table[id] = anderson.getParams(TERRAIN_TO_ANDERSON.get(id) ?? 0);
-    }
+    // Nonburnable and CutLine (Phase 4) resolve to Anderson id 0 = nonburnable —
+    // a control line is a barrier to the Rothermel model exactly as it is to the
+    // CA path, keeping the id purely a palette concern.
+    this.table[Fuel.Nonburnable] = anderson.getParams(0);
+    this.table[Fuel.CutLine] = anderson.getParams(0);
+    this.table[Fuel.Grass] = anderson.getParams(mapping.grass);
+    this.table[Fuel.Brush] = anderson.getParams(mapping.brush);
+    this.table[Fuel.Timber] = anderson.getParams(mapping.timber);
   }
 
   getParams(fuelType: number): FuelParams {

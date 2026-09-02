@@ -9,6 +9,7 @@ import { UniformWeatherProvider } from '../src/sim/uniformWeather';
 import { DEFAULT_CANOPY_STAND, canopyBulkDensity } from '../src/sim/canopyStand';
 import {
   CrownFire,
+  MIN_CROWN_CBD,
   activeCrownRos,
   activeCrownThresholdRos,
   crownFractionBurned,
@@ -194,8 +195,10 @@ describe('RothermelFireModel crown-fire integration', () => {
     expect(crownCounts(calm)[0]).toBe(calm.width * calm.height);
   });
 
-  it('grass never crowns (its canopy byte gives CBD below the crown floor)', () => {
-    expect(canopyBulkDensity(10, DEFAULT_CANOPY_STAND)).toBeLessThan(0.02);
+  it('grass and brush never crown (their canopy bytes give CBD below the crown floor)', () => {
+    expect(canopyBulkDensity(10, DEFAULT_CANOPY_STAND)).toBeLessThan(MIN_CROWN_CBD);
+    expect(canopyBulkDensity(40, DEFAULT_CANOPY_STAND)).toBeLessThan(MIN_CROWN_CBD);
+    expect(canopyBulkDensity(200, DEFAULT_CANOPY_STAND)).toBeGreaterThan(MIN_CROWN_CBD);
     const grass = createWorld({ width: 60, height: 5, seed: 1, cellSize: 30 });
     grass.layers.fuel.data.fill(3); // FM3 tall grass — a hot surface fire
     grass.layers.moisture.data.fill(DRY);
