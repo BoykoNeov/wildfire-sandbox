@@ -315,39 +315,54 @@ function savSizeClass(sav: number): number {
 // ───────────────────────── the assembled model ─────────────────────────
 
 /**
- * Run the full **two-category** Rothermel surface-spread model for one fuel bed +
- * environment (Rothermel 1972 with Albini 1976 refinements; assembly cross-checked
- * against firelab/behave `surfaceFuelbedIntermediates.cpp` +
- * `surfaceFireReactionIntensity.cpp`, commit d963287f60a6).
- *
- *   R = I_R·ξ·(1 + φ_w + φ_s) / (heat sink)        [ft/min]
- *
- * Dead and live particles form two categories, each weighted and damped on its
- * own, then summed in the reaction intensity:
- *
- *   I_R = Γ′·h·η_s·(w_n,dead·η_M,dead + w_n,live·η_M,live)
- *
- * Weighting (Albini 1976): within a category, particles are weighted by their
- * fraction of the category's surface area `f_i`; the two categories are weighted
- * by their fraction of *total* surface area `f_cat`. The **net loads** `w_n` use
- * the coarser SAV-size-class surface-area fraction `g_i` (particles binned into
- * six σ classes, fractions summed per bin) — this is why a bed with several dead
- * classes does **not** reduce to the raw summed load. A single-particle category
- * (e.g. FM1 grass) has f_i = g_i = 1, so it matches the single-category form
- * exactly. Live fuel gets its own moisture of extinction ({@link
- * liveMoistureOfExtinction}); heat content and mineral damping are uniform across
- * categories for the standard fuel models.
- *
- * Returns 0 spread when the fuel cannot carry fire (no load, or *both* categories
- * at/above their moisture of extinction → I_R = 0).
+ * Everything about a fuel bed that does **not** depend on wind or slope — the
+ * expensive half of the model, computed once per bed and reused for every spread
+ * direction. Rothermel factorises as R = R₀·(1 + φ_w + φ_s): only the wind and
+ * slope factors vary with direction, and both are cheap given these numbers.
+ * The fire model prepares one of these per candidate cell and evaluates its
+ * eight neighbour directions against it (an 8× saving in the hot loop).
  */
-export function surfaceSpread(bed: FuelBed, env: SpreadEnv): SpreadResult {
-  const zero: SpreadResult = {
-    rateOfSpread: 0,
+export interface BedIntermediates {
+  /** No-wind, no-slope rate of spread R₀ [ft/min]; 0 if the bed cannot carry fire. */
+  rateOfSpreadNoWindSlope: number;
+  /** Reaction intensity I_R [BTU/ft²/min]. */
+  reactionIntensity: number;
+  /** Characteristic SAV σ [ft⁻¹]. */
+  sigma: number;
+  /** Packing ratio β. */
+  beta: number;
+  /** β / β_op. */
+  betaRatio: number;
+  /** Wind-factor coefficients for this σ, β (Rothermel eq. 47–50). */
+  windC: number;
+  windB: number;
+  windE: number;
+  /** Slope-factor coefficient 5.275·β^-0.3 (eq. 51). */
+  slopeK: number;
+}
+
+/** Wind factor from prepared intermediates: C·U^B·(β/β_op)^-E. */
+function windFactorFrom(bi: BedIntermediates, midflameWind: number): number {
+  if (midflameWind <= 0) return 0;
+  return bi.windC * Math.pow(midflameWind, bi.windB) * Math.pow(bi.betaRatio, -bi.windE);
+}
+
+/**
+ * Prepare a fuel bed: the two-category Rothermel 1972 / Albini 1976 assembly up
+ * to R₀ (see {@link surfaceSpread} for the derivation and cross-checks). Returns
+ * all-zero intermediates when the bed cannot carry fire.
+ */
+export function prepareFuelBed(bed: FuelBed): BedIntermediates {
+  const zero: BedIntermediates = {
     rateOfSpreadNoWindSlope: 0,
     reactionIntensity: 0,
-    firelineIntensity: 0,
-    flameLength: 0,
+    sigma: 0,
+    beta: 0,
+    betaRatio: 0,
+    windC: 0,
+    windB: 0,
+    windE: 0,
+    slopeK: 0,
   };
 
   const ps = bed.particles;
@@ -441,17 +456,81 @@ export function surfaceSpread(bed: FuelBed, env: SpreadEnv): SpreadResult {
   const hsk = bulkDensity * (fCatDead * hsDead + fCatLive * hsLive);
   if (hsk <= 0) return zero;
 
-  const r0 = (ir * xi) / hsk;
-  const phiW = windFactor(env.midflameWind, sigma, betaRatio);
-  const phiS = slopeFactor(env.tanSlope, beta);
-  const ros = r0 * (1 + phiW + phiS);
-
-  const ib = firelineIntensity(ir, ros, sigma);
   return {
-    rateOfSpread: ros,
-    rateOfSpreadNoWindSlope: r0,
+    rateOfSpreadNoWindSlope: (ir * xi) / hsk,
     reactionIntensity: ir,
-    firelineIntensity: ib,
-    flameLength: flameLength(ib),
+    sigma,
+    beta,
+    betaRatio,
+    windC: windParameterC(sigma),
+    windB: windParameterB(sigma),
+    windE: windParameterE(sigma),
+    slopeK: 5.275 * Math.pow(beta, -0.3),
   };
+}
+
+/**
+ * The cheap, direction-dependent half: R = R₀·(1 + φ_w + φ_s) and the fire-
+ * behaviour outputs, from prepared intermediates. Writes into `out` so a hot
+ * loop can evaluate many directions without allocating.
+ */
+export function spreadFromIntermediates(bi: BedIntermediates, env: SpreadEnv, out: SpreadResult): SpreadResult {
+  const r0 = bi.rateOfSpreadNoWindSlope;
+  if (r0 <= 0) {
+    out.rateOfSpread = 0;
+    out.rateOfSpreadNoWindSlope = 0;
+    out.reactionIntensity = 0;
+    out.firelineIntensity = 0;
+    out.flameLength = 0;
+    return out;
+  }
+  const phiW = windFactorFrom(bi, env.midflameWind);
+  const phiS = bi.slopeK * env.tanSlope * env.tanSlope;
+  const ros = r0 * (1 + phiW + phiS);
+  const ib = firelineIntensity(bi.reactionIntensity, ros, bi.sigma);
+  out.rateOfSpread = ros;
+  out.rateOfSpreadNoWindSlope = r0;
+  out.reactionIntensity = bi.reactionIntensity;
+  out.firelineIntensity = ib;
+  out.flameLength = flameLength(ib);
+  return out;
+}
+
+/**
+ * Run the full **two-category** Rothermel surface-spread model for one fuel bed +
+ * environment (Rothermel 1972 with Albini 1976 refinements; assembly cross-checked
+ * against firelab/behave `surfaceFuelbedIntermediates.cpp` +
+ * `surfaceFireReactionIntensity.cpp`, commit d963287f60a6). Convenience form of
+ * {@link prepareFuelBed} + {@link spreadFromIntermediates}; use those directly
+ * when evaluating one bed against many wind/slope directions.
+ *
+ *   R = I_R·ξ·(1 + φ_w + φ_s) / (heat sink)        [ft/min]
+ *
+ * Dead and live particles form two categories, each weighted and damped on its
+ * own, then summed in the reaction intensity:
+ *
+ *   I_R = Γ′·h·η_s·(w_n,dead·η_M,dead + w_n,live·η_M,live)
+ *
+ * Weighting (Albini 1976): within a category, particles are weighted by their
+ * fraction of the category's surface area `f_i`; the two categories are weighted
+ * by their fraction of *total* surface area `f_cat`. The **net loads** `w_n` use
+ * the coarser SAV-size-class surface-area fraction `g_i` (particles binned into
+ * six σ classes, fractions summed per bin) — this is why a bed with several dead
+ * classes does **not** reduce to the raw summed load. A single-particle category
+ * (e.g. FM1 grass) has f_i = g_i = 1, so it matches the single-category form
+ * exactly. Live fuel gets its own moisture of extinction ({@link
+ * liveMoistureOfExtinction}); heat content and mineral damping are uniform across
+ * categories for the standard fuel models.
+ *
+ * Returns 0 spread when the fuel cannot carry fire (no load, or *both* categories
+ * at/above their moisture of extinction → I_R = 0).
+ */
+export function surfaceSpread(bed: FuelBed, env: SpreadEnv): SpreadResult {
+  return spreadFromIntermediates(prepareFuelBed(bed), env, {
+    rateOfSpread: 0,
+    rateOfSpreadNoWindSlope: 0,
+    reactionIntensity: 0,
+    firelineIntensity: 0,
+    flameLength: 0,
+  });
 }

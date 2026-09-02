@@ -24,8 +24,10 @@ import {
   flameResidenceTime,
   ftPerMinToMetersPerSec,
   metersPerSecToFtPerMin,
-  surfaceSpread,
-  type FuelBed,
+  prepareFuelBed,
+  spreadFromIntermediates,
+  type BedIntermediates,
+  type SpreadResult,
 } from './rothermel';
 
 // 8-neighbour offsets and their cell-distances (cardinals = 1, diagonals = √2).
@@ -146,6 +148,10 @@ export class RothermelFireModel implements IFireModel {
   readonly name = 'fire:rothermel';
   private next: Uint8Array | null = null;
   private progress: Float32Array | null = null;
+  // Front-candidate mask (see `markCandidates`): scratch buffers reused per tick.
+  private ignited: Uint8Array | null = null;
+  private dilatedRow: Uint8Array | null = null;
+  private candidate: Uint8Array | null = null;
   // Flame residence time depends only on the fuel's dead bed SAV, so it is the
   // same for every cell of a given fuel id. Cache it per id instead of rebuilding
   // a fuel bed (an allocation) for every burning cell every tick.
@@ -169,6 +175,13 @@ export class RothermelFireModel implements IFireModel {
     foliarMoisturePct: 0,
   };
   private readonly crownOut: CrownResult = { type: CrownFire.None, cfb: 0, ros: 0, intensity: 0 };
+  private readonly spread: SpreadResult = {
+    rateOfSpread: 0,
+    rateOfSpreadNoWindSlope: 0,
+    reactionIntensity: 0,
+    firelineIntensity: 0,
+    flameLength: 0,
+  };
 
   constructor(
     private readonly fuel: IFuelModel,
@@ -192,14 +205,14 @@ export class RothermelFireModel implements IFireModel {
    * rate in m/s and leaves intensity [kW/m] + crown type in `this.crownOut`.
    */
   private directionBehaviour(
-    bed: FuelBed,
-    fm10: FuelBed | null,
+    bed: BedIntermediates,
+    fm10: BedIntermediates | null,
     cbd: number,
     windMps: number,
     openWindMps: number,
     tanSlope: number,
   ): number {
-    const r = surfaceSpread(bed, { midflameWind: metersPerSecToFtPerMin(windMps), tanSlope });
+    const r = spreadFromIntermediates(bed, { midflameWind: metersPerSecToFtPerMin(windMps), tanSlope }, this.spread);
     const out = this.crownOut;
     out.type = CrownFire.None;
     out.intensity = btuPerFtSecToKwPerM(r.firelineIntensity);
@@ -215,16 +228,16 @@ export class RothermelFireModel implements IFireModel {
       return ftPerMinToMetersPerSec(r.rateOfSpread);
     }
     const crownWind = metersPerSecToFtPerMin(CROWN_WIND_REDUCTION * openWindMps);
-    inp.fm10Ros = surfaceSpread(fm10, { midflameWind: crownWind, tanSlope }).rateOfSpread * 0.3048;
+    inp.fm10Ros = spreadFromIntermediates(fm10, { midflameWind: crownWind, tanSlope }, this.spread).rateOfSpread * 0.3048;
     evaluateCrownFire(inp, out);
     return out.ros / 60; // m/min → m/s
   }
 
   /** The FM10 crown-proxy bed for a cell, or null when the cell cannot crown. */
-  private crownBedFor(canopyByte: number, deadMoisture: number): FuelBed | null {
+  private crownBedFor(canopyByte: number, deadMoisture: number): BedIntermediates | null {
     if (!this.crownEnabled) return null;
     if (canopyBulkDensity(canopyByte, this.canopy) < MIN_CROWN_CBD) return null;
-    return fuelBed(FM10, deadMoisture, this.liveMoisture);
+    return prepareFuelBed(fuelBed(FM10, deadMoisture, this.liveMoisture));
   }
 
   /**
@@ -254,6 +267,50 @@ export class RothermelFireModel implements IFireModel {
     return u > 0 ? (w * waf) / u : 0;
   }
 
+  /**
+   * Mark every cell with an ignited 8-neighbour (the only cells the front can
+   * reach this tick) by a separable 3×3 dilation of the ignited mask: one
+   * horizontal pass, one vertical pass, both tight typed-array loops. This is
+   * what keeps the sweep O(front) rather than 8 neighbour reads for every unburned
+   * burnable cell on the map every tick (which profiled at ~10× the cost of the
+   * actual spread arithmetic). Pure function of the pre-tick `fire` buffer, so
+   * determinism and the double-buffer semantics are untouched.
+   */
+  private markCandidates(fire: Uint8Array, width: number, height: number): Uint8Array {
+    const n = fire.length;
+    if (this.ignited === null || this.ignited.length !== n) {
+      this.ignited = new Uint8Array(n);
+      this.dilatedRow = new Uint8Array(n);
+      this.candidate = new Uint8Array(n);
+    }
+    const ign = this.ignited;
+    const row = this.dilatedRow!;
+    const cand = this.candidate!;
+    // Unburned is 0, so "ever ignited" is simply fire[i] !== 0.
+    for (let i = 0; i < n; i++) ign[i] = fire[i] !== 0 ? 1 : 0;
+    // Horizontal: row[i] = ign[i-1] | ign[i] | ign[i+1] within the row.
+    for (let y = 0; y < height; y++) {
+      const r0 = y * width;
+      const r1 = r0 + width - 1;
+      if (width === 1) {
+        row[r0] = ign[r0];
+        continue;
+      }
+      row[r0] = ign[r0] | ign[r0 + 1];
+      for (let i = r0 + 1; i < r1; i++) row[i] = ign[i - 1] | ign[i] | ign[i + 1];
+      row[r1] = ign[r1 - 1] | ign[r1];
+    }
+    // Vertical: cand[i] = row[i-w] | row[i] | row[i+w].
+    if (height === 1) {
+      cand.set(row);
+      return cand;
+    }
+    for (let i = 0; i < width; i++) cand[i] = row[i] | row[i + width];
+    for (let i = width; i < n - width; i++) cand[i] = row[i - width] | row[i] | row[i + width];
+    for (let i = n - width; i < n; i++) cand[i] = row[i - width] | row[i];
+    return cand;
+  }
+
   step(world: WorldState, dt: number): void {
     const { width, height, cellSize, layers } = world;
     const fire = layers.fire.data;
@@ -274,6 +331,7 @@ export class RothermelFireModel implements IFireModel {
     const next = this.next;
     const progress = this.progress!;
     next.set(fire);
+    const candidate = this.markCandidates(fire, width, height);
 
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
@@ -281,6 +339,9 @@ export class RothermelFireModel implements IFireModel {
         const state = fire[i];
 
         if (state === FireState.Burned) continue;
+        // Unburned cells with no ignited neighbour cannot advance this tick — the
+        // overwhelmingly common case, rejected before any fuel lookup.
+        if (state === FireState.Unburned && candidate[i] === 0) continue;
 
         const fp = this.fuel.getParams(fuelL[i]);
         const rf = fp.rothermel;
@@ -291,7 +352,7 @@ export class RothermelFireModel implements IFireModel {
           // once, so every burning cell carries a defined value for readers.
           if (intensity[i] === 0 && rf) {
             const m = byteToFraction(moist[i]);
-            const bed = fuelBed(rf, m, this.liveMoisture);
+            const bed = prepareFuelBed(fuelBed(rf, m, this.liveMoisture));
             const waf = this.midflameFactor(rf, canopyL[i]);
             const speed = Math.hypot(windU[i], windV[i]);
             const fm10 = this.crownBedFor(canopyL[i], m);
@@ -318,24 +379,13 @@ export class RothermelFireModel implements IFireModel {
           continue;
         }
 
-        // Unburned: accumulate the fastest arriving front from ignited neighbours.
+        // Unburned with an ignited neighbour: accumulate the fastest arriving front.
         if (!fp.burnable || !rf) continue;
 
-        // Cheap reject: skip building the fuel bed unless an ignited neighbour exists.
-        let hasSource = false;
-        for (let n = 0; n < 8; n++) {
-          const nx = x + NX[n];
-          const ny = y + NY[n];
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-          if (isIgnited(fire[ny * width + nx])) {
-            hasSource = true;
-            break;
-          }
-        }
-        if (!hasSource) continue;
-
         const m = byteToFraction(moist[i]);
-        const bed = fuelBed(rf, m, this.liveMoisture);
+        // The expensive bed assembly happens ONCE per candidate cell; the eight
+        // directions below only evaluate the cheap wind/slope factors against it.
+        const bed = prepareFuelBed(fuelBed(rf, m, this.liveMoisture));
         // Wind sampled at THIS (destination) cell — see world.ts windU/windV — and
         // reduced to midflame here, once, since the factor is a property of the cell.
         const waf = this.midflameFactor(rf, canopyL[i]);
