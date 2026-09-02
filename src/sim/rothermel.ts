@@ -257,6 +257,16 @@ export function metersPerSecToFtPerMin(metersPerSec: number): number {
   return (metersPerSec * 60) / 0.3048;
 }
 
+/** BTU/ft/s → kW/m (the SI fireline-intensity unit the crown-fire literature uses): 1 BTU = 1.05506 kJ, 1 ft = 0.3048 m. */
+export function btuPerFtSecToKwPerM(btuPerFtSec: number): number {
+  return btuPerFtSec * (1.05506 / 0.3048);
+}
+
+/** kW/m → BTU/ft/s (inverse of {@link btuPerFtSecToKwPerM}). */
+export function kwPerMToBtuPerFtSec(kwPerM: number): number {
+  return kwPerM / (1.05506 / 0.3048);
+}
+
 /**
  * Live-fuel moisture of extinction M_x,live [fraction]. Albini 1976 p.89 — the
  * live fuel's own extinction moisture, driven by how much *fine dead* fuel is

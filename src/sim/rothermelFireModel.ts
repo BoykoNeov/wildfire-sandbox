@@ -5,11 +5,13 @@ import type { RothermelFuel } from '../models/IFuelModel';
 import { byteToFraction } from '../core/moisture';
 import { deadFuelBed, fuelBed } from './anderson13';
 import {
+  btuPerFtSecToKwPerM,
   characteristicSAV,
   flameResidenceTime,
   ftPerMinToMetersPerSec,
   metersPerSecToFtPerMin,
   surfaceSpread,
+  type SpreadResult,
 } from './rothermel';
 
 // 8-neighbour offsets and their cell-distances (cardinals = 1, diagonals = √2).
@@ -19,6 +21,17 @@ const NDIST = [Math.SQRT2, 1, Math.SQRT2, 1, 1, Math.SQRT2, 1, Math.SQRT2];
 
 /** Default live-fuel moisture [fraction] — 100%, a green-but-not-peak baseline. */
 const DEFAULT_LIVE_MOISTURE = 1.0;
+
+/** Construction options. A bare number is accepted as `liveMoisture` (legacy form). */
+export interface RothermelFireModelOptions {
+  /**
+   * Live-fuel moisture [fraction] applied to every live particle when the bed is
+   * assembled (the world moisture layer is dead-only — plan §D6). A scenario-level
+   * scalar; 1.0 = 100%, a defensible "green live fuel" default that lets the
+   * live-bearing shrub models carry. A single value for both live herb and woody.
+   */
+  liveMoisture?: number;
+}
 
 /**
  * Phase-2 fire model: a cellular automaton whose front speed *is* the Rothermel
@@ -52,6 +65,14 @@ const DEFAULT_LIVE_MOISTURE = 1.0;
  * time view; burnout (`Burning → Burned`) is then purely the cosmetic flame
  * duration and is decoupled from spread.
  *
+ * **Fireline intensity is an output layer.** When a cell ignites, the Byram
+ * fireline intensity of the fastest arriving direction is written to
+ * `layers.intensity` (kW/m) — the front's own record of how hard it burned into
+ * each cell. Externally-lit cells (ignition tool, ember, backburn) have no arriving
+ * front; they get their head-fire intensity (own bed, local wind magnitude, flat)
+ * on their first burning tick. Nothing else writes the layer (Handoff §3.1); the
+ * crown-fire and spotting science and the renderer only read it.
+ *
  * Determinism: sources are read from the pre-tick `fire` buffer (double-buffered
  * like {@link CaFireModel}); each cell writes only its own `progress`. So the
  * sweep is order-independent and reproducible.
@@ -72,17 +93,15 @@ export class RothermelFireModel implements IFireModel {
   // a fuel bed (an allocation) for every burning cell every tick.
   private readonly residenceSecById = new Map<number, number>();
 
-  /**
-   * Live-fuel moisture [fraction] applied to every live particle when the bed is
-   * assembled (the world moisture layer is dead-only — plan §D6). A scenario-level
-   * scalar; 1.0 = 100%, a defensible "green live fuel" default that lets the
-   * live-bearing shrub models carry while staging seasonal live-moisture dynamics
-   * for Phase 3. A single value for both live herb and woody (a cheap future split).
-   */
+  private readonly liveMoisture: number;
+
   constructor(
     private readonly fuel: IFuelModel,
-    private readonly liveMoisture = DEFAULT_LIVE_MOISTURE,
-  ) {}
+    opts: RothermelFireModelOptions | number = {},
+  ) {
+    const o: RothermelFireModelOptions = typeof opts === 'number' ? { liveMoisture: opts } : opts;
+    this.liveMoisture = o.liveMoisture ?? DEFAULT_LIVE_MOISTURE;
+  }
 
   step(world: WorldState, dt: number): void {
     const { width, height, cellSize, layers } = world;
@@ -93,6 +112,7 @@ export class RothermelFireModel implements IFireModel {
     const windU = layers.windU.data;
     const windV = layers.windV.data;
     const burnElapsed = layers.burnElapsed.data;
+    const intensity = layers.intensity.data;
 
     if (this.next === null || this.next.length !== fire.length) {
       this.next = new Uint8Array(fire.length);
@@ -113,6 +133,15 @@ export class RothermelFireModel implements IFireModel {
         const rf = fp.rothermel;
 
         if (state === FireState.Burning) {
+          // An externally-lit cell (tool / ember / backburn) has no arriving front
+          // and hence no recorded intensity: give it its own head-fire intensity
+          // once, so every burning cell carries a defined value for readers.
+          if (intensity[i] === 0 && rf) {
+            const bed = fuelBed(rf, byteToFraction(moist[i]), this.liveMoisture);
+            const speed = Math.hypot(windU[i], windV[i]);
+            const r = surfaceSpread(bed, { midflameWind: metersPerSecToFtPerMin(speed), tanSlope: 0 });
+            intensity[i] = btuPerFtSecToKwPerM(r.firelineIntensity);
+          }
           // Burnout is cosmetic flame duration (Albini residence time τ = 384/σ),
           // independent of spread. No rothermel descriptor ⇒ can't sustain ⇒ out.
           burnElapsed[i] += dt;
@@ -146,6 +175,7 @@ export class RothermelFireModel implements IFireModel {
         const wv = windV[i];
 
         let maxRate = 0; // max ROS_dir / (dist·cellSize)  [1/s]
+        let best: SpreadResult | null = null; // the fire behaviour along that direction
         for (let n = 0; n < 8; n++) {
           const nx = x + NX[n];
           const ny = y + NY[n];
@@ -167,15 +197,19 @@ export class RothermelFireModel implements IFireModel {
           const rise = elev[i] - elev[ni];
           const tanSlope = rise > 0 ? rise / run : 0;
 
-          const ros = surfaceSpread(bed, { midflameWind, tanSlope }).rateOfSpread;
-          const rate = ftPerMinToMetersPerSec(ros) / run;
-          if (rate > maxRate) maxRate = rate;
+          const result = surfaceSpread(bed, { midflameWind, tanSlope });
+          const rate = ftPerMinToMetersPerSec(result.rateOfSpread) / run;
+          if (rate > maxRate) {
+            maxRate = rate;
+            best = result;
+          }
         }
 
         progress[i] += maxRate * dt;
         if (progress[i] >= 1) {
           next[i] = FireState.Burning;
           burnElapsed[i] = 0;
+          intensity[i] = best ? btuPerFtSecToKwPerM(best.firelineIntensity) : 0;
         }
       }
     }

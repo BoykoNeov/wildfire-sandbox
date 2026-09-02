@@ -38,6 +38,21 @@ export interface Layers {
   /** Seconds a cell has been burning — drives burnout. */
   burnElapsed: Layer<Float32Array>;
   /**
+   * Byram fireline intensity **[kW/m]** of the front that ignited each cell — a
+   * fire-behaviour *output* layer, written by the Rothermel fire model at the
+   * moment a cell ignites (the intensity along the fastest arriving direction) and
+   * never by anything else. `0` on cells that have never ignited. A cell lit
+   * externally (ignition tool, spotting ember, backburn) has no arriving front, so
+   * the model fills in its own head-fire intensity on its first burning tick.
+   *
+   * This is the observable the science layers above surface spread read: crown-fire
+   * initiation (Van Wagner's I_0 criterion), intensity-driven ember production, and
+   * the renderer's char/flame grading. Readers treat it as data; no system other
+   * than the mounted fire model writes it (Handoff §3.1). The legacy Phase-1 CA
+   * leaves it at 0 — it has no intensity concept.
+   */
+  intensity: Layer<Float32Array>;
+  /**
    * Wind field, written by IWeatherProvider, read by IFireModel. A vector pointing
    * the way the wind blows; the Rothermel fire model reads its components as
    * **midflame wind in m/s** (plan §D3). (The legacy Phase-1 `CaFireModel` instead
@@ -109,6 +124,7 @@ export function createWorld(opts: WorldOptions): WorldState {
     retardant: uint8Layer(width, height),
     fire: uint8Layer(width, height),
     burnElapsed: float32Layer(width, height),
+    intensity: float32Layer(width, height),
     windU: float32Layer(width, height),
     windV: float32Layer(width, height),
   };
