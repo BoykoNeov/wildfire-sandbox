@@ -197,3 +197,71 @@ describe('spotting is deterministic', () => {
     expect(farFieldIgnited(a)).toBeGreaterThan(0);
   });
 });
+
+/**
+ * Phase-6 follow-up: the launch rate reads the fire model's recorded fireline
+ * intensity (`layers.intensity`, kW/m) instead of using canopy as a stand-in for
+ * how hard the front is burning. Pinned in a spotting-ONLY pipeline so nothing
+ * overwrites the intensity we plant, and in a SINGLE tick so the deferred-write
+ * discipline rules out cascade: every ignition counted came from a source cell we
+ * set the intensity of, so the count is a direct read of the launch rate.
+ */
+describe('spotting launch rate scales with recorded fireline intensity', () => {
+  const WW = 60;
+  const HH = 40;
+  const WALL_X = 6; // a one-column burning wall; the whole field downwind is fuel.
+
+  /** One tick of spotting alone from a burning wall whose cells record `iKw`. */
+  function embersInOneTick(seed: number, iKw: number): number {
+    const world = createWorld({ width: WW, height: HH, seed, cellSize: 30 });
+    world.layers.fuel.data.fill(FM_TIMBER);
+    world.layers.moisture.data.fill(DRY);
+    world.layers.canopy.data.fill(CANOPY);
+    world.layers.windU.data.fill(WIND_EAST);
+    for (let y = 0; y < HH; y++) {
+      const i = y * WW + WALL_X;
+      world.layers.fire.data[i] = FireState.Burning;
+      world.layers.intensity.data[i] = iKw;
+    }
+
+    new Simulation(world, [new SpottingSystem(new Anderson13FuelModel())]).step(1);
+
+    const fire = world.layers.fire.data;
+    let n = 0;
+    for (let i = 0; i < fire.length; i++) {
+      if (i % WW === WALL_X) continue; // the wall itself
+      if (fire[i] !== FireState.Unburned) n++;
+    }
+    return n;
+  }
+
+  const SEEDS = [1, 2, 7, 42, 1337, 2024];
+
+  it('a fierce front throws far more brands than a marginal one', () => {
+    let cool = 0;
+    let hot = 0;
+    for (const seed of SEEDS) {
+      cool += embersInOneTick(seed, 300); // a low, marginal surface front
+      hot += embersInOneTick(seed, 30000); // a fierce brush/crown-scale run
+    }
+    // Non-vacuous at both ends: the cool front still spots (it is not simply off),
+    // and the hot one spots several times as much. Flame length L ∝ I^0.46 predicts
+    // (30000/300)^0.46 ≈ 8.3× and the measured counts land at ≈ 8×; assert a margin
+    // well inside that, so the test pins the direction and rough size of the law
+    // without taking the constants hostage.
+    expect(cool).toBeGreaterThan(0);
+    expect(hot).toBeGreaterThan(cool * 2.5);
+  });
+
+  it('an unscored burning cell falls back to exactly the reference-front rate', () => {
+    // A cell with no recorded intensity — the legacy CA pipeline, or an ember that
+    // landed after the fire model already ran this tick — must not go silent. Its
+    // fallback is defined as the reference front, so a wall recording exactly
+    // SPOT_REF_INTENSITY_KW and a wall recording nothing draw the same rng stream
+    // and must produce byte-identical results.
+    for (const seed of SEEDS) {
+      expect(embersInOneTick(seed, 0)).toBe(embersInOneTick(seed, 1000));
+    }
+    expect(embersInOneTick(SEEDS[0], 0)).toBeGreaterThan(0); // non-vacuous
+  });
+});

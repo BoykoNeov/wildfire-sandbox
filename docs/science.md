@@ -66,9 +66,11 @@ claim here can be checked in under a minute.
 | | |
 |---|---|
 | Module | `src/sim/spottingSystem.ts` |
-| Form | Per burning cell per tick: launch Bernoulli `p = 1 − e^{−k·canopy·wind·dt}`, exponential downwind loft distance (mean ∝ wind × canopy), ±20° scatter, moisture-gated reception below the landing fuel's M_x. Crown state multiplies launch rate ×3 (torching) / ×6 (active) and loft distance ×1.5 / ×2.5. |
-| Not | Albini's firebrand-transport model, plume physics, brand burnout in flight. Model the consequence of the updraft, not the updraft. |
-| Pinned by | `tests/spotting.test.ts` (embers cross an absolute firebreak, downwind only, no same-tick cascade, determinism), `tests/crownFire.test.ts` (crown-source boost). |
+| Form | Per burning cell per tick: launch Bernoulli `p = 1 − e^{−k·canopy·wind·(L/L_ref)·dt}`, exponential downwind loft distance (mean ∝ wind × canopy), ±20° scatter, moisture-gated reception below the landing fuel's M_x. Crown state multiplies launch rate ×3 (torching) / ×6 (active) and loft distance ×1.5 / ×2.5. |
+| Launch drive | `L = 0.45·I_B^0.46` (Byram/Albini flame length, §1) evaluated on the cell's recorded `layers.intensity`, divided by the flame length of a 1000 kW/m reference front. Flame length, not intensity itself, is the driver: it is the height brands are lifted from, and it maps the 10²–10⁵ kW/m range the sandbox produces onto a ≈0.5–8× band. A burning cell with no recorded intensity (legacy CA pipeline; a brand that landed after the fire model already ran this tick) falls back to exactly the reference rate. |
+| Canopy and crown | Canopy is **brand availability and plume height** (bark, cones, lofted from crown height), no longer a stand-in for intensity. The crown multiplier survives on the same grounds: measured in `timber-crown-run`, crowning timber records ~700–900 kW/m against ~380 kW/m for the surface fire under it — ≈1.4× once flame length compresses it, far short of the ~6× a crown run actually spots at, because the extra brands come out of the canopy rather than out of the fireline. |
+| Not | Albini's firebrand-transport model, plume physics, brand burnout in flight, intensity-driven **loft distance** (still wind × canopy × crown tier). Model the consequence of the updraft, not the updraft. |
+| Pinned by | `tests/spotting.test.ts` (embers cross an absolute firebreak, downwind only, no same-tick cascade, determinism, launch rate scales ≈8× from a 300 to a 30 000 kW/m front matching L ∝ I^0.46, unscored cells fall back byte-identically to the reference front), `tests/crownFire.test.ts` (crown-source boost). |
 
 ## 7. Suppression — doctrine, layer-only (Phase 4)
 
@@ -100,6 +102,9 @@ upslope only.
   dead size classes. A 10-hr / 100-hr lag is a model-side tweak to
   `deadFuelBed` (plan §D6 item 1), still deferred.
 - **Live fuel moisture dynamics.** A scenario scalar, not a seasonal curve.
+- **Intensity-driven ember *loft distance*.** Launch rate now reads the recorded
+  fireline intensity (§6), but how far a brand carries is still wind × canopy ×
+  crown tier, not a plume-height function of intensity.
 - **Terrain-driven wind** (channelling, ridge acceleration) and any plume or
   fire–atmosphere coupling — CFD territory (handoff §2.1).
 - **Per-cell canopy structure** (CBH / CBD / height layers) — scenario-level

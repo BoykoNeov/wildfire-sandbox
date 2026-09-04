@@ -100,8 +100,70 @@ with Playwright.
 - **Huygens / elliptical wavefront** — a later `IFireModel` behind the seam.
 - **Per-class dead moisture** (1-/10-/100-hr) — `deadFuelBed` distribution tweak.
 - **Live-moisture seasonal curve** — a scenario keyframe list, like ambient.
-- **Intensity-driven ember production** — spotting now reads crown state; using
-  `layers.intensity` directly for a continuous launch rate is the next step.
+- ~~**Intensity-driven ember production**~~ — **LANDED** (see the follow-up
+  section below): the launch rate now reads `layers.intensity` through Byram
+  flame length. Ember *loft distance* is still crown-tiered, and stays deferred.
 - **Per-cell canopy structure** (CBH/CBD/height layers) — with real-data import.
 - **Phase 5c save/load** — plan decision #5, the user's scope call.
 - **Structures / WUI → industrial** — handoff §5, the additive future phases.
+
+---
+
+## Follow-up (landed after Phase 6): heat-driven ember production
+
+The Phase-3 deferral "the launch rate uses canopy as an intensity proxy, not
+Byram's `firelineIntensity`" is closed. `SpottingSystem` now reads the
+`layers.intensity` the Phase-6 fire model writes and scales the launch rate by
+Byram/Albini flame length `L = 0.45·I^0.46` (the existing `flameLength` in
+`sim/rothermel.ts`), normalised against a 1000 kW/m reference front.
+
+**Why flame length rather than intensity directly.** Flame length is the height
+brands are lifted from, and the 0.46 exponent compresses the 10²–10⁵ kW/m range
+these scenarios actually produce into a ≈0.5–8× launch band instead of a 1000×
+one. Linear-in-intensity would peg a fierce brush front at one ember per cell
+per tick — the structural ceiling — over a wide area, and the model would stop
+discriminating at the top of its own range.
+
+**Why canopy and the crown multiplier both survive.** Canopy keeps its *other*
+role (brand availability and plume height — bark and cones, which grass has
+none of). The crown multiplier stays because measured intensities say it must:
+in `timber-crown-run`, within FM10 timber, surface fire records ~380 kW/m and
+crowning cells ~700–900 kW/m — only ≈1.4× after flame length, against the ×3/×6
+the launch boost applies. Crown-borne brands come out of the canopy, not out of
+the fireline, so intensity does not see them; folding crowning into the heat
+term alone would have gutted spotting in the flagship crown scenario.
+
+**Zero-intensity fallback.** A burning cell with no recorded intensity uses the
+reference rate exactly (ratio 1), not zero. Two cases need it: the legacy
+Phase-1 CA pipeline has no intensity concept at all, and a brand that lands
+*after* the fire model has already run this tick is unscored for exactly one
+tick. Making that zero would mute CA-pipeline spotting entirely.
+
+**Calibration measured, not guessed** (`timber-crown-run`, 3000 steps, per fuel
+band and crown state):
+
+| band | recorded intensity (median kW/m) | flame-length factor | ember chance/tick @10 m/s |
+|---|---|---|---|
+| grass FM2 (canopy 0.04) | 5 073 | 2.1 | 0.016 (was 0.008) |
+| brush FM4 (canopy 0.16) | 78 839 | 7.5 | 0.21 (was 0.03) |
+| timber FM10 surface (canopy 0.78) | 381 | 0.64 | 0.10 (was 0.16) |
+| timber FM10 active crown | 676 | 0.83 | 0.54 (was 0.61) |
+
+The timbered cases land almost exactly where they were — that reference front is
+chosen so they do — while a fierce brush run now spots ~7× more, which is the
+behaviour change the step is for. Nothing saturates: the worst observed per-tick
+ember chance is 0.63, the same value the canopy-proxy version already produced.
+
+**Whole-run effect** (ignited cells after 3000 steps, before → after): 
+`timber-crown-run` 19 657 → 20 566 (+4.6%), `grass-valley` 11 794 → 14 788
+(+25%), `shifting-winds` 393 → 394 (unchanged). The crown scenario barely moves
+because its timber is exactly what the reference front is calibrated to; the
+grass valley grows because a 11 500 kW/m grass front now spots ~3× as often and
+grass carries the resulting seeds fast; the weak, damp scenario is untouched.
+
+**Verified.** Full suite 201/201 green (2 new tests in `tests/spotting.test.ts`:
+launch rate scales ≈8× from a 300 to a 30 000 kW/m front, matching the ≈8.3×
+`L ∝ I^0.46` predicts; an unscored cell is byte-identical to a 1000 kW/m one).
+Typecheck clean. `npm run frame -- timber-crown-run 3000 intensity` still renders
+a coherent wedge with a speckled downwind edge, not a rash of spot fires. The
+determinism golden uses the CA pipeline without spotting and is untouched.

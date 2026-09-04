@@ -2,6 +2,7 @@ import { FireState, type WorldState } from '../core/world';
 import type { System } from '../core/system';
 import type { IFuelModel } from '../models/IFuelModel';
 import { byteToFraction } from '../core/moisture';
+import { flameLength, kwPerMToBtuPerFtSec } from './rothermel';
 
 /**
  * Phase-3 spotting (Handoff §2.1 "plume rise / spotting = modeled
@@ -15,11 +16,13 @@ import { byteToFraction } from '../core/moisture';
  *
  * **A separate {@link System}, ordered AFTER the fire model** (Handoff §3.1 —
  * systems talk only through layers, never call each other). It reads the `fire`
- * layer to find ember *sources*, `canopy` (the torching proxy — timber throws
- * brands, grass barely does), `crown` (the fire model's crown-fire verdict —
- * a torching or running crown multiplies launch rate and loft distance),
- * `windU/windV` for transport, and `fuel`+`moisture` at the landing cell for
- * reception; it writes new `Burning` cells back into `fire`. It is an **additive co-writer of the `fire` layer**: the Rothermel/CA
+ * layer to find ember *sources*, `intensity` (the fire model's Byram fireline
+ * intensity — how hard the front at that cell is actually burning), `canopy`
+ * (brand *availability* and plume height — timber bark and cones loft, grass has
+ * nothing to throw), `crown` (the fire model's crown-fire verdict — a torching or
+ * running crown multiplies launch rate and loft distance), `windU/windV` for
+ * transport, and `fuel`+`moisture` at the landing cell for reception; it writes
+ * new `Burning` cells back into `fire`. It is an **additive co-writer of the `fire` layer**: the Rothermel/CA
  * fire model owns surface spread and must run *first*; spotting layers ember
  * ignitions on top. Reordering the pipeline so spotting runs before the fire
  * model would break this contract.
@@ -38,6 +41,23 @@ import { byteToFraction } from '../core/moisture';
  * only stepping-time `world.rng` consumer in the Rothermel pipeline (the dynamic
  * weather provider uses its own `Rng`; moisture and Rothermel draw none). The
  * determinism golden uses the CA pipeline *without* spotting, so it is untouched.
+ *
+ * **Heat-driven launch rate.** The launch rate scales with the *recorded fireline
+ * intensity* of the front that lit the cell (`layers.intensity`, kW/m), not with
+ * canopy standing in for it — that substitution was the Phase-3 deferral this
+ * step closes. The scaling is Byram/Albini flame length, `L = 0.45·I^0.46`
+ * (`flameLength` in `sim/rothermel.ts`, the same relation the renderer grades and
+ * crown initiation is written against), normalised by the flame length of a
+ * {@link SPOT_REF_INTENSITY_KW} front so a timbered surface fire keeps its
+ * previously-tuned rate. Flame length — not intensity itself — is the right
+ * driver: it is the height brands are lifted from, and it compresses the
+ * 10²–10⁵ kW/m range the sandbox produces into a ~0.5–8× band instead of a
+ * 1000× one. Canopy stays in the formula in its *other* role (brand availability
+ * and plume height), and crown state stays too: torching lifts brands out of the
+ * canopy itself, which fireline intensity barely registers (in
+ * `timber-crown-run`, crowning timber records ~700–900 kW/m against ~380 for the
+ * surface fire under it — a ~1.4× flame-length effect, not the ~6× a crown run
+ * actually spots at).
  *
  * Deliberately phenomenological, not a firebrand-transport CFD: one ember per
  * burning cell per tick, an exponential (heavy-tailed) downwind loft distance
@@ -59,6 +79,7 @@ export class SpottingSystem implements System {
     const windU = layers.windU.data;
     const windV = layers.windV.data;
     const crown = layers.crown.data;
+    const intensity = layers.intensity.data;
     const burnElapsed = layers.burnElapsed.data;
 
     // Landing ignitions, collected during the sweep and applied after it (see the
@@ -71,8 +92,10 @@ export class SpottingSystem implements System {
         // Only actively burning cells throw brands (Burned = flamed out).
         if (fire[i] !== FireState.Burning) continue;
 
-        // Torching proxy: canopy bulk-density fraction. Grass (~0.04) barely
-        // lofts; timber (~0.78) throws far. 0 (nonburnable/water) never spots.
+        // Brand availability: canopy bulk-density fraction. Grass (~0.04) has
+        // little to throw and no plume height; timber (~0.78) sheds burning bark
+        // and cones from height. 0 (nonburnable/water) never spots. This is NOT a
+        // stand-in for fire intensity any more — see `heat` below.
         const canopyFrac = canopy[i] / 255;
         if (canopyFrac <= 0) continue;
 
@@ -87,14 +110,26 @@ export class SpottingSystem implements System {
         const windSpeed = Math.hypot(wu, wv);
         if (windSpeed <= 0) continue;
 
+        // How hard this cell is actually burning, as a flame-length ratio against
+        // a reference front (see the header). `intensity` is 0 on a cell no fire
+        // model has scored — the legacy Phase-1 CA (no intensity concept), and, for
+        // exactly one tick, a cell an ember lit *after* the fire model already ran
+        // this tick. Such a cell falls back to the reference rate rather than going
+        // silent; do not "fix" this to 0, it would mute spotting under the CA
+        // pipeline entirely and let a just-landed brand be a dead source.
+        const iKw = intensity[i];
+        const heat = iKw > 0 ? flameLength(kwPerMToBtuPerFtSec(iKw)) / REF_FLAME_LENGTH : 1;
+
         // dt-robust launch Bernoulli: p = 1 − exp(−rate·dt), so the per-tick
         // chance is consistent whatever dt the caller uses (same form as the
-        // moisture step). One ember per cell per tick at most.
+        // moisture step). One ember per cell per tick at most — the structural
+        // ceiling on how hard this can saturate, whatever the factors multiply to.
         // A crowning cell (torching or a running crown — `layers.crown`, written
         // by the fire model) is the real ember factory: the convective column
         // lofts far more brands, far higher. Surface fire keeps the base rate.
         const crownType = crown[i];
-        const rate = SPOT_RATE_BASE * canopyFrac * windSpeed * CROWN_LAUNCH_BOOST[crownType];
+        const rate =
+          SPOT_RATE_BASE * canopyFrac * windSpeed * heat * CROWN_LAUNCH_BOOST[crownType];
         const pLaunch = 1 - Math.exp(-rate * dt);
         if (rng.next() >= pLaunch) continue;
 
@@ -143,12 +178,25 @@ export class SpottingSystem implements System {
 }
 
 /**
- * Launch rate per (canopy-fraction · wind-m/s · second). Tuned so a burning
- * timbered cell (canopy ≈ 0.78) in a stiff ~10 m/s wind throws a brand roughly
- * every several seconds — frequent enough to seed spot fires over a run, rare
- * enough per cell that spotting reads as punctuation, not a second front.
+ * Launch rate per (canopy-fraction · wind-m/s · flame-length-ratio · second).
+ * Tuned so a burning timbered cell (canopy ≈ 0.78) in a stiff ~10 m/s wind throws
+ * a brand roughly every several seconds — frequent enough to seed spot fires over
+ * a run, rare enough per cell that spotting reads as punctuation, not a second
+ * front. A timbered surface fire records ≈ {@link SPOT_REF_INTENSITY_KW}-ish
+ * intensity, so its flame-length ratio is ≈ 1 and that tuning carries over
+ * unchanged from the canopy-proxy version.
  */
 const SPOT_RATE_BASE = 0.02;
+/**
+ * Reference fireline intensity [kW/m] the flame-length ratio is normalised
+ * against — a moderate, well-established surface front. Cells burning at this
+ * intensity get a ratio of exactly 1, i.e. the historically tuned launch rate;
+ * a fierce brush run (FM4 at tens of thousands of kW/m) reaches ~5–8×, a
+ * marginal smouldering front drops below 1.
+ */
+const SPOT_REF_INTENSITY_KW = 1000;
+/** Flame length [ft] of the reference front; the divisor of the ratio. */
+const REF_FLAME_LENGTH = flameLength(kwPerMToBtuPerFtSec(SPOT_REF_INTENSITY_KW));
 /** Loft-distance scale, metres of mean drop per (m/s of wind). */
 const LOFT_PER_WIND = 6;
 /** Half-width of the downwind scatter cone, radians (~20°). */
@@ -162,6 +210,13 @@ const DEFAULT_EXTINCTION_MOISTURE = 0.3;
  * tree throws several times the brands of a surface fire under it; a running
  * crown fire is the classic long-range spotting engine. Index 0 = 1 keeps every
  * surface-only scenario (and the spotting tests) exactly as before.
+ *
+ * This survives the move to a heat-driven launch rate deliberately: it models
+ * brands coming *out of the canopy* (bark plates, cones, lofted from crown
+ * height), a source fireline intensity does not see. Measured in
+ * `timber-crown-run`, crowning timber records only ~1.8–2.3× the surface fire's
+ * intensity — ~1.4× once flame length compresses it — so folding crowning into
+ * the heat term alone would quietly gut spotting in the crown scenario.
  */
 const CROWN_LAUNCH_BOOST = [1, 3, 6];
 /** Loft-distance multiplier by crown state — a taller convective column carries further. */

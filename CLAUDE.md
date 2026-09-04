@@ -96,7 +96,8 @@ When unsure on realism: **science-grounded sandbox, not CFD, not predictive.**
 P1 core CA + seams ✅ → P2 Anderson 13 + Rothermel + moisture + editor ✅ →
 P3 dynamic wind/rain/spotting ✅ → P4 firefighting doctrine ✅ → P5 polish
 (5-viz ✅, 5a stats HUD ✅, 5b scenarios ✅, 5c save/load deferred) → P6 science
-hurdles (intensity layer, wind adjustment factor, crown fire, perf) ✅.
-Next: the honest gaps in `docs/science.md` §9 (Huygens wavefront, per-class dead
-moisture, live-moisture curve), then the additive future phases (WUI structures
-→ industrial). Each phase must be runnable and verifiable before the next.
+hurdles (intensity layer, wind adjustment factor, crown fire, perf) ✅ →
+heat-driven ember production (spotting reads `layers.intensity` via Byram flame
+length) ✅. Next: the honest gaps in `docs/science.md` §9 (Huygens wavefront,
+per-class dead moisture, live-moisture curve, intensity-driven ember loft), then
+the additive future phases (WUI structures → industrial). Each phase must be runnable and verifiable before the next.
