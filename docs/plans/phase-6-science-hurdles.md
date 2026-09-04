@@ -154,7 +154,7 @@ chosen so they do — while a fierce brush run now spots ~7× more, which is the
 behaviour change the step is for. Nothing saturates: the worst observed per-tick
 ember chance is 0.63, the same value the canopy-proxy version already produced.
 
-**Whole-run effect** (ignited cells after 3000 steps, before → after): 
+**Whole-run effect** (ignited cells after 3000 steps, before → after):
 `timber-crown-run` 19 657 → 20 566 (+4.6%), `grass-valley` 11 794 → 14 788
 (+25%), `shifting-winds` 393 → 394 (unchanged). The crown scenario barely moves
 because its timber is exactly what the reference front is calibrated to; the
