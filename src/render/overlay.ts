@@ -83,6 +83,203 @@ export function drawWindOverlay(
   ctx.restore();
 }
 
+// ───────────────────────── wind streamlines ─────────────────────────
+
+/** How the wind field is drawn, cycled by the HUD's one wind button. */
+export type WindOverlayMode = 'off' | 'arrows' | 'streamlines';
+
+/**
+ * Deterministic int → [0,1). A local copy of the palette's cell hash (which is
+ * not exported) so spawn positions need no RNG at all — never `world.rng`, which
+ * belongs to the sim, and never `Math.random`.
+ */
+function hash01(i: number): number {
+  let h = (i * 0x9e3779b1) >>> 0;
+  h ^= h >>> 15;
+  h = (h * 0x85ebca6b) >>> 0;
+  h ^= h >>> 13;
+  return (h >>> 8) / 16777216;
+}
+
+const TICK = 1 / 60; // fixed sub-step (s) — the animation is frame-rate independent
+const MAX_TICKS = 8; // ≤ 0.133 s advanced per call: a clamped 0.25 s frame jump can't shred a trail
+const GAIN = 1.2; // cells per second per (m/s) of wind — 12 m/s ≈ 14 cells/s
+const LIFE = 2.5; // seconds before a particle is respawned elsewhere
+const FADE = 0.4; // seconds of fade at each end of a life, so nothing pops in or out
+// Tail length is (TRAIL × SAMPLE_TICKS) of time, not of memory: at the 0.4 s an
+// every-3rd-tick history gives, a 5 m/s breeze draws a 2.9-cell dash that reads
+// as a dot. A full second of history is ~6 cells at 5 m/s, ~14 at a gale.
+const TRAIL = 10; // samples kept per particle …
+const SAMPLE_TICKS = 6; // … one every 6 ticks (0.1 s) → 1.0 s of visible tail
+const LEVELS = 5; // alpha buckets: one path + one stroke per bucket, not per particle
+const MAX_ALPHA = 0.8;
+
+/**
+ * Animated wind streamlines (Phase-7 part-2 item E; the visual half of the
+ * Phase-3 wind plan's deferred "arrows / streamlines"). Particles drift with the
+ * wind at their own cell and leave a short fading tail, so a wind *shift* reads
+ * as motion instead of as arrows that quietly point somewhere else.
+ *
+ * **This is the one stateful thing in this file.** Everything else here is a
+ * pure read of world state redrawn from scratch each frame; a streamline only
+ * means something if it remembers where it has been. It is still browser-only
+ * and still writes nothing: positions live in cell space inside this object, the
+ * sim never sees it, and it is not in the exported PNG.
+ *
+ * `update` is deliberately separate from `draw` and touches no canvas, so the
+ * advection can be driven headlessly by a test.
+ *
+ * **Time base: real seconds, not simulated ones.** Advecting by `dt · timeScale`
+ * would carry a particle clean across the map in a single frame at 600×. So the
+ * streamlines show the wind field's *direction and relative strength* at a
+ * legible speed at every run speed — they are not a scale model of how fast the
+ * air is moving. The cost is that they keep drifting while the sim is paused.
+ */
+export class WindParticles {
+  private readonly n: number;
+  private readonly w: number;
+  private readonly h: number;
+  private readonly px: Float32Array;
+  private readonly py: Float32Array;
+  private readonly age: Float32Array;
+  private readonly spd: Float32Array;
+  private readonly trailX: Float32Array;
+  private readonly trailY: Float32Array;
+  private readonly samples: Uint8Array;
+  private head = 0; // newest trail slot; shared, because every particle samples on the same tick
+  private sinceSample = 0;
+  private spawnSeq = 0;
+
+  constructor(world: WorldState, count = 600) {
+    this.n = count;
+    this.w = world.width;
+    this.h = world.height;
+    this.px = new Float32Array(count);
+    this.py = new Float32Array(count);
+    this.age = new Float32Array(count);
+    this.spd = new Float32Array(count);
+    this.trailX = new Float32Array(count * TRAIL);
+    this.trailY = new Float32Array(count * TRAIL);
+    this.samples = new Uint8Array(count);
+    for (let p = 0; p < count; p++) {
+      this.respawn(p);
+      // Stagger the initial ages so the whole field doesn't blink out together.
+      this.age[p] = hash01(p ^ 0x7f4a7c15) * LIFE;
+    }
+  }
+
+  private respawn(p: number): void {
+    const s = this.spawnSeq++;
+    this.px[p] = hash01(s * 2) * (this.w - 1);
+    this.py[p] = hash01(s * 2 + 1) * (this.h - 1);
+    this.age[p] = 0;
+    this.spd[p] = 0;
+    this.samples[p] = 0; // drop the old tail, or the respawn draws as a streak across the map
+  }
+
+  /**
+   * Advance every particle by `dtSeconds` of **real** time in fixed sub-steps.
+   * A particle that has aged out, or drifted off the map, respawns at a
+   * hash-derived position *before* the wind is sampled: reading `windU` past the
+   * end of the typed array yields `undefined`, and the position would then be
+   * NaN for the rest of the run — invisible, silent, and permanent.
+   */
+  update(world: WorldState, dtSeconds: number): void {
+    const windU = world.layers.windU.data;
+    const windV = world.layers.windV.data;
+    const { w, h, n, px, py, age, spd } = this;
+    const ticks = Math.min(MAX_TICKS, Math.max(0, Math.round(dtSeconds / TICK)));
+
+    for (let t = 0; t < ticks; t++) {
+      for (let p = 0; p < n; p++) {
+        age[p] += TICK;
+        let cx = Math.floor(px[p]);
+        let cy = Math.floor(py[p]);
+        if (age[p] > LIFE || cx < 0 || cy < 0 || cx >= w || cy >= h) {
+          this.respawn(p);
+          cx = Math.floor(px[p]);
+          cy = Math.floor(py[p]);
+        }
+        const i = cy * w + cx;
+        const u = windU[i];
+        const v = windV[i];
+        spd[p] = Math.hypot(u, v);
+        px[p] += u * GAIN * TICK;
+        py[p] += v * GAIN * TICK;
+      }
+      if (++this.sinceSample >= SAMPLE_TICKS) {
+        this.sinceSample = 0;
+        this.head = (this.head + 1) % TRAIL;
+        const { trailX, trailY, samples, head } = this;
+        for (let p = 0; p < n; p++) {
+          trailX[p * TRAIL + head] = px[p];
+          trailY[p * TRAIL + head] = py[p];
+          if (samples[p] < TRAIL) samples[p]++;
+        }
+      }
+    }
+  }
+
+  /**
+   * Alpha of particle `p`'s freshest segment: faded in and out over its life,
+   * and dimmed where the air is nearly still so calm ground doesn't fizz.
+   */
+  private headAlpha(p: number): number {
+    const a = this.age[p];
+    const life = Math.min(1, a / FADE, (LIFE - a) / FADE);
+    if (life <= 0) return 0;
+    return MAX_ALPHA * life * (0.15 + 0.85 * Math.min(1, this.spd[p] / 12));
+  }
+
+  /**
+   * Draw the tails, bucketed by alpha: one `beginPath`/`stroke` per bucket
+   * rather than per particle (600 separate strokes a frame is measurable, and
+   * the HUD's perf readout would show it).
+   */
+  draw(ctx: CanvasRenderingContext2D, vp: Viewport): void {
+    const { sx, sy, dpr } = vp;
+    const { n, px, py, trailX, trailY, samples, head } = this;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 1.25 * dpr;
+    for (let b = 0; b < LEVELS; b++) {
+      ctx.strokeStyle = `rgba(226, 238, 255, ${(((b + 1) / LEVELS) * MAX_ALPHA).toFixed(3)})`;
+      ctx.beginPath();
+      let any = false;
+      for (let p = 0; p < n; p++) {
+        const s = samples[p];
+        if (s === 0) continue;
+        const a0 = this.headAlpha(p);
+        if (a0 <= 0) continue;
+        let x0 = px[p];
+        let y0 = py[p];
+        for (let k = 0; k < s; k++) {
+          const idx = p * TRAIL + ((head - k + TRAIL) % TRAIL);
+          const x1 = trailX[idx];
+          const y1 = trailY[idx];
+          const a = a0 * (1 - k / TRAIL); // older samples fade toward the tail
+          const bucket = Math.min(LEVELS - 1, Math.floor((a / MAX_ALPHA) * LEVELS));
+          if (bucket === b && a > 0.02) {
+            ctx.moveTo((x0 + 0.5) * sx, (y0 + 0.5) * sy);
+            ctx.lineTo((x1 + 0.5) * sx, (y1 + 0.5) * sy);
+            any = true;
+          }
+          x0 = x1;
+          y0 = y1;
+        }
+      }
+      if (any) ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /** Test seam: the live positions, in cell space. */
+  get positions(): { x: Float32Array; y: Float32Array } {
+    return { x: this.px, y: this.py };
+  }
+}
+
 // ───────────────────────── unit markers ─────────────────────────
 
 export interface UnitRoster {

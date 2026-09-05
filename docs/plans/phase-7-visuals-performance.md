@@ -209,15 +209,48 @@ is counted. Either extend the ground cache to the data views (their ground is a
 pure function of the same layers plus the view id — one cached buffer per view,
 invalidated together) or accept that `?size=512` is a terrain-view feature.
 
-### E. Animated wind streamlines (visual, overlay canvas only)
-**Change.** In `overlay.ts` add `WindParticles`: 600 particles in cell space,
-each advected by the wind at its cell each frame (`p += wind * 0.02 cells`), with
-a 40-frame life, respawned at a hash-derived position, drawn as short fading
-polylines. Toggle replaces (or accompanies) the arrows via the same HUD button
-(cycle: off → arrows → streamlines). Browser-only, not in the PNG, may use its own
-`Math.random`-free counter (use the existing `hash01` pattern; never `world.rng`).
-**Verify.** Visually; wind shift in `shifting-winds` should visibly swing the
-streamlines over the 30 sim-minutes.
+### E. Animated wind streamlines (visual, overlay canvas only) — ✅ LANDED
+`WindParticles` in `overlay.ts`: 600 particles in cell space, advected by the
+wind at their own cell, each leaving a short fading tail, respawned at a
+`hash01`-derived position (a local copy of the palette's hash — it is not
+exported there, and widening that module's surface for an overlay toy would put
+the byte-identical render tests in the way of a visual tweak). The HUD's one wind
+button now cycles off → arrows → streamlines and **relabels** as it goes; an `on`
+class alone would make the two modes look identical.
+
+**Three decisions worth keeping:**
+- **`update` is split from `draw`,** and `update` never touches a canvas. That is
+  what lets `tests/windParticles.test.ts` pin the advection headlessly — nothing
+  else in `overlay.ts` is tested, because everything else mixes state and `ctx`.
+  The class doc says outright that it is the one stateful thing in a file whose
+  header promises pure reads; a streamline is only meaningful because it
+  remembers where it has been.
+- **Real seconds, never `dt × timeScale`.** At 600× a particle would cross the
+  map in a single frame. The streamlines therefore show the field's *direction
+  and relative strength* at a legible speed at every run speed — they are not a
+  scale model of the air's speed, and they keep drifting while paused. Advection
+  runs in fixed 1/60 s sub-steps capped at 8 per call, so the frame loop's
+  clamped 0.25 s jump can't shred a trail either.
+- **Respawn happens *before* the wind is sampled.** Reading `windU` past the end
+  of the typed array yields `undefined`; the position becomes NaN and stays NaN
+  for the rest of the run — invisible, silent, permanent. The bounds check is
+  the whole defence.
+
+**Tuned once against a real frame, as expected.** The plan's gain with an
+every-3rd-tick, 8-sample history gives 0.4 s of tail — at a 5 m/s breeze that is
+a 2.9-cell dash that reads as a dot, not a streak. Tail length is
+`TRAIL × SAMPLE_TICKS` of *time*, not of memory, so it went to 10 samples every
+6 ticks = 1.0 s ≈ 6 cells at 5 m/s, ~14 at a gale. Segments are bucketed into 5
+alpha levels and stroked one path per bucket — 600 separate `stroke` calls a
+frame would show up in the HUD's own perf readout.
+
+**Verified.** `npm run frame` is useless here (the overlay is not in the PNG), so
+a scratch script drove the real `update`/`draw` against a recording context and
+rasterised the segments over a real terrain frame: at 5 sim-minutes of
+`shifting-winds` the streaks run SW→NE, at 20 minutes they have swung to nearly
+N→S — the swing the plan asked to see. Tests: particles advect downwind at the
+documented gain, stay finite and on the grid when blown hard off an edge for 20 s,
+reproduce exactly between two instances, and never draw on `world.rng`.
 
 ### F. Spot-fire flash (visual, palette) — ✅ LANDED
 A fresh isolated ignition — an ember landing, a click, a backburn going in —

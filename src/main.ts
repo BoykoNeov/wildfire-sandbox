@@ -1,5 +1,11 @@
 import { CanvasRenderer } from './render/canvasRenderer';
-import { drawBrushCursor, drawWindOverlay, makeViewport } from './render/overlay';
+import {
+  drawBrushCursor,
+  drawWindOverlay,
+  makeViewport,
+  WindParticles,
+  type WindOverlayMode,
+} from './render/overlay';
 import { TerrainEditor } from './editor/terrainEditor';
 import { SuppressionCommand } from './editor/suppressionCommand';
 import { loadScenario } from './scenario/scenario';
@@ -54,7 +60,11 @@ const command =
 // Run state owned by the page: pacing, view mode, overlays. The HUD reports
 // control changes through callbacks and formats stats each frame (Phase-5a).
 let timeScale = preset.timeScale ?? 120; // sim-seconds per real second; 0 = paused
-let windOverlay = false;
+let windOverlay: WindOverlayMode = 'off';
+// Built once, not per frame — the streamlines only mean anything because they
+// carry their own trail state between frames. A scenario change is a full page
+// reload, so there is no re-init path to keep in sync.
+const windParticles = new WindParticles(world);
 const hud = new Hud(PRESETS, preset, timeScale, {
   onScenario: (id) => {
     // Rebuilding world + systems + editor + command shell + renderer is exactly a
@@ -69,8 +79,8 @@ const hud = new Hud(PRESETS, preset, timeScale, {
   onView: (mode) => {
     renderer.view = mode;
   },
-  onWindOverlay: (on) => {
-    windOverlay = on;
+  onWindOverlay: (mode) => {
+    windOverlay = mode;
   },
   onSmoke: (on) => {
     renderer.smoke = on;
@@ -131,7 +141,14 @@ function frame(now: number): void {
   sizeOverlay();
   const vp = makeViewport(world, overlay.width, overlay.height, window.devicePixelRatio || 1);
   overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
-  if (windOverlay) drawWindOverlay(overlayCtx, world, vp);
+  if (windOverlay === 'arrows') {
+    drawWindOverlay(overlayCtx, world, vp);
+  } else if (windOverlay === 'streamlines') {
+    // Advected in real seconds (`elapsed`), never `elapsed * timeScale`: at 600×
+    // a particle would cross the whole map in one frame. See WindParticles.
+    windParticles.update(world, elapsed);
+    windParticles.draw(overlayCtx, vp);
+  }
   command?.render(overlayCtx, vp);
   const hover = editor.hover;
   if (hover) {

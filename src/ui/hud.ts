@@ -12,11 +12,13 @@ import {
   type Rgb,
   type ViewMode,
 } from '../render/palette';
+import type { WindOverlayMode } from '../render/overlay';
 
 /**
  * Phase-5a HUD (`docs/plans/phase-5-polish.md` decision #1): a browser-only DOM
  * **reader**. It formats `SimStats` + agent getters each frame and owns the run
- * controls (scenario, speed, view, wind overlay, smoke). It writes nothing into
+ * controls (scenario, speed, view, wind overlay — off / arrows / streamlines —
+ * smoke, spot flash). It writes nothing into
  * world state; control changes are reported through callbacks that `main.ts`
  * wires to the frame loop / renderer. Like `SuppressionCommand` it is outside
  * the determinism test.
@@ -29,7 +31,7 @@ export interface HudCallbacks {
   onScenario(id: string): void;
   onTimeScale(scale: number): void;
   onView(mode: ViewMode): void;
-  onWindOverlay(on: boolean): void;
+  onWindOverlay(mode: WindOverlayMode): void;
   onSmoke(on: boolean): void;
   onSpotFlash(on: boolean): void;
 }
@@ -59,6 +61,17 @@ const SPEEDS: ReadonlyArray<{ scale: number; label: string }> = [
   { scale: 300, label: '300×' },
   { scale: 600, label: '600×' },
 ];
+
+/** The wind button's cycle, and the label for each state it can be showing. */
+const WIND_NEXT: Record<WindOverlayMode, WindOverlayMode> = {
+  off: 'arrows',
+  arrows: 'streamlines',
+  streamlines: 'off',
+};
+const WIND_LABEL: Record<Exclude<WindOverlayMode, 'off'>, string> = {
+  arrows: 'Wind arrows',
+  streamlines: 'Wind streams',
+};
 
 /** Sparkline sample spacing (sim seconds) and history length. */
 const SPARK_EVERY = 120;
@@ -104,7 +117,7 @@ export class Hud {
   private readonly perf: HTMLElement;
   private readonly history: number[] = [];
   private nextSample = 0;
-  private windOn = false;
+  private windMode: WindOverlayMode = 'off';
   private smokeOn = true;
   private spotFlashOn = true;
 
@@ -173,13 +186,21 @@ export class Hud {
       this.drawLegend(mode);
     });
     viewRow.appendChild(view);
+    // One button, three states — so it has to relabel: "on" alone would leave
+    // arrows and streamlines looking identical while showing different things.
     const wind = document.createElement('button');
-    wind.textContent = 'Wind arrows';
-    wind.title = 'Overlay the wind field as arrows (length and brightness scale with speed)';
+    wind.textContent = WIND_LABEL.arrows;
+    wind.title =
+      'Click to cycle the wind overlay: off → arrows → streamlines. Arrows sample a lattice; ' +
+      'streamlines drift with the wind so a shift reads as motion (drawn at a legible speed, ' +
+      'not to scale with the run speed).';
     wind.addEventListener('click', () => {
-      this.windOn = !this.windOn;
-      wind.classList.toggle('on', this.windOn);
-      cb.onWindOverlay(this.windOn);
+      this.windMode = WIND_NEXT[this.windMode];
+      // The label names what the *next* click gives you when off, and what you
+      // are looking at otherwise — so it always matches the picture on screen.
+      wind.textContent = WIND_LABEL[this.windMode === 'off' ? 'arrows' : this.windMode];
+      wind.classList.toggle('on', this.windMode !== 'off');
+      cb.onWindOverlay(this.windMode);
     });
     viewRow.appendChild(wind);
     const smoke = document.createElement('button');
