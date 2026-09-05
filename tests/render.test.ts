@@ -91,6 +91,39 @@ describe('renderRGBA — shared frame composition', () => {
     }
   });
 
+  it('amortises smoke across frames: the field persists, so a second frame differs', () => {
+    const { world } = small('grass-valley', 500);
+    const n = world.width * world.height * 4;
+    const a = new Uint8ClampedArray(n);
+    const b = new Uint8ClampedArray(n);
+    renderRGBA(world, a, { view: 'terrain', smoke: true }); // cold start: every source
+    renderRGBA(world, b, { view: 'terrain', smoke: true }); // decay + one quarter
+    expect(sameBytes(a, b)).toBe(false);
+  });
+
+  it('the amortised smoke field holds the same average density as a cold start', () => {
+    // The deposit gain is calibrated so re-laying a quarter of the sources per
+    // frame under exponential decay reproduces the stateless field's mean. Drift
+    // here means the plumes would saturate (too high) or fade out (too low).
+    const { world } = small('grass-valley', 500);
+    const n = world.width * world.height * 4;
+    const off = new Uint8ClampedArray(n);
+    const on = new Uint8ClampedArray(n);
+    renderRGBA(world, off, { view: 'terrain', smoke: false }); // also arms a cold start
+    const deviation = () => {
+      let d = 0;
+      for (let i = 0; i < n; i++) d += Math.abs(on[i] - off[i]);
+      return d;
+    };
+    renderRGBA(world, on, { view: 'terrain', smoke: true });
+    const cold = deviation();
+    for (let f = 0; f < 8; f++) renderRGBA(world, on, { view: 'terrain', smoke: true });
+    const settled = deviation();
+    expect(cold).toBeGreaterThan(0);
+    expect(settled / cold).toBeGreaterThan(0.7);
+    expect(settled / cold).toBeLessThan(1.43);
+  });
+
   it('caches hillshade per world and rebuilds it after invalidateTerrainShading', () => {
     const { world } = small('shifting-winds', 10);
     const n = world.width * world.height;

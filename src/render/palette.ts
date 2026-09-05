@@ -58,8 +58,8 @@ export interface Rgb {
  * 256²). The cache is keyed by world in a `WeakMap`, so `renderRGBA`'s signature
  * is unchanged and the headless exporter gets it for free; the editor calls
  * {@link invalidateTerrainShading} after a stroke that changes elevation or fuel.
- * The cache also owns the per-frame scratch buffers (smoke accumulators, the
- * scar-edge list) so the frame loop allocates nothing.
+ * The cache also owns the smoke accumulators (which persist between frames — see
+ * the smoke section) and the scar-edge list, so the frame loop allocates nothing.
  */
 
 /** Deterministic per-cell hash → [0,1). Static across frames (texture, phases). */
@@ -121,13 +121,19 @@ interface TerrainCache {
   shade: Float32Array;
   /** `hash01(i)` per cell. */
   noise: Float32Array;
-  /** Smoke optical depth accumulator, per cell (per-frame scratch). */
+  /** Smoke optical depth accumulator, per cell. Persists between frames (amortised). */
   smoke: Float32Array;
   /** Soot-weighted smoke accumulator, per cell — colours the plume grey→dark. */
   soot: Float32Array;
   /** Indices of Burned cells on the live scar edge this frame + their count. */
   edge: Int32Array;
   edgeCount: number;
+  /**
+   * Frames rendered with smoke on since the last cold start. 0 means the smoke
+   * field is empty and the next frame must lay every source (see the smoke
+   * section); otherwise `& 3` selects which quarter of the sources lays this frame.
+   */
+  frameCounter: number;
   dirty: boolean;
 }
 
@@ -144,6 +150,7 @@ function cacheFor(world: WorldState): TerrainCache {
       soot: new Float32Array(n),
       edge: new Int32Array(n),
       edgeCount: 0,
+      frameCounter: 0,
       dirty: true,
     };
     caches.set(world, c);
@@ -633,6 +640,45 @@ const SMOKE_EDGE_STRENGTH = 0.38;
 const SMOKE_EDGE_LEN_SCALE = 0.7;
 
 /**
+ * **Amortised smoke.** Laying every plume every frame is the renderer's biggest
+ * cost on a large fire (≈ 1.9 ms/frame at 256² with ~300 flaming cells and a
+ * 7 000-cell scar). Instead the smoke field *persists* between frames: each
+ * frame decays it by {@link SMOKE_DECAY} and re-lays only the quarter of the
+ * sources whose schedule hash falls in this frame's slot — a quarter of the
+ * plume work for a field that looks the same, only smoother.
+ *
+ * The deposit gain keeps the **time-averaged** optical depth equal to the old
+ * stateless field. Depositing `g` every `K` frames under per-frame decay `d`
+ * settles at a mean of `g / (K·(1−d))`, so `g = K·(1−d)` = 0.6 reproduces the
+ * unit-strength field exactly — depositing at the plan's "4×" would have been
+ * ≈ 6.7× too thick and saturated everything to a grey blanket.
+ *
+ * A **cold start** (`frameCounter === 0`: a fresh world, or the first frame after
+ * smoke was toggled off) lays every source at gain 1, which lands directly on
+ * that same steady-state mean — so the one-frame headless PNG and the browser's
+ * running field show the same plume, with no separate calibration.
+ *
+ * The schedule hash is deliberately *not* `cache.noise` (the scar-edge loop
+ * already gates on that one; sharing it would confine every edge source to two
+ * of the four slots and make the smoke pulse).
+ */
+const SMOKE_DECAY = 0.85;
+const SMOKE_SLOTS = 4;
+const SMOKE_AMORT_GAIN = SMOKE_SLOTS * (1 - SMOKE_DECAY);
+/**
+ * Optical depth below which a cell is zeroed during the decay pass. Without it
+ * the persistent field leaves a long tail of near-zero values, the composite
+ * pass's early-out stops firing, and the compositing gets *more* expensive than
+ * it was stateless.
+ */
+const SMOKE_FLOOR = 0.004;
+
+/** Second per-cell hash, for the amortisation schedule only. */
+function schedHash01(i: number): number {
+  return hash01(i ^ 0x5bf03635);
+}
+
+/**
  * Lay one plume from cell (x, y) into the accumulators. `strength` is the
  * optical depth at the source, `sooty` (0..1) how dark the plume is, `lenScale`
  * stretches the plume (a crown column reaches further).
@@ -647,6 +693,7 @@ function layPlume(
   sooty: number,
   lenScale: number,
   lateral: number,
+  gain: number,
 ): void {
   const { width, height, layers, clock } = world;
   const u = layers.windU.data[i];
@@ -687,7 +734,7 @@ function layPlume(
       const cy = Math.floor(cyF + py * k);
       if (cx < 0 || cy < 0 || cx >= width || cy >= height) continue;
       const ci = cy * width + cx;
-      const d = a * w;
+      const d = a * w * gain;
       smoke[ci] += d;
       soot[ci] += d * sooty;
     }
@@ -749,22 +796,53 @@ export function renderRGBA(
 
   const crown = layers.crown.data;
 
+  // Smoke off (a data view, or the HUD toggle): the persistent field goes stale
+  // as the fire moves, so the next smoke-on frame starts cold rather than
+  // resuming a plume anchored to where the fire used to be.
+  if (!drawSmoke) cache.frameCounter = 0;
+
   if (drawSmoke) {
     const smoke = cache.smoke;
     const soot = cache.soot;
-    smoke.fill(0);
-    soot.fill(0);
+    // Cold start: no field to carry over, so lay every source at full gain.
+    // Otherwise fade what is there and re-lay one quarter of the sources.
+    const cold = cache.frameCounter === 0;
+    const gain = cold ? 1 : SMOKE_AMORT_GAIN;
+    const slot = cache.frameCounter & (SMOKE_SLOTS - 1);
+    const slotLo = slot / SMOKE_SLOTS;
+    const slotHi = (slot + 1) / SMOKE_SLOTS;
+    if (cold) {
+      smoke.fill(0);
+      soot.fill(0);
+    } else {
+      for (let i = 0; i < n; i++) {
+        const tau = smoke[i];
+        if (tau === 0) continue;
+        const decayed = tau * SMOKE_DECAY;
+        if (decayed < SMOKE_FLOOR) {
+          smoke[i] = 0;
+          soot[i] = 0;
+        } else {
+          smoke[i] = decayed;
+          soot[i] *= SMOKE_DECAY;
+        }
+      }
+    }
     const intensity = layers.intensity.data;
     // Flaming cells: a full plume, hotter fronts thicker, crown runs darker and longer.
     for (let i = 0; i < n; i++) {
       if (fire[i] !== FireState.Burning) continue;
+      if (!cold) {
+        const sch = schedHash01(i);
+        if (sch < slotLo || sch >= slotHi) continue;
+      }
       const cr = crown[i];
       const heat = Math.min(1, intensity[i] / 4000);
       const strength =
         SMOKE_FLAME_STRENGTH + 0.4 * heat + (cr === CrownFire.Active ? 0.4 : cr === CrownFire.Passive ? 0.2 : 0);
       const sooty = 0.3 + 0.35 * heat + (cr === CrownFire.Active ? 0.3 : 0);
       const lenScale = cr === CrownFire.Active ? 1.6 : cr === CrownFire.Passive ? 1.25 : 1;
-      layPlume(world, cache, i % width, (i / width) | 0, i, strength, sooty, lenScale, 3);
+      layPlume(world, cache, i % width, (i / width) | 0, i, strength, sooty, lenScale, 3, gain);
     }
     // The smouldering scar edge: paler, shorter plumes — but most of the smoke.
     // Every other edge cell (by its static hash) lays a plume at ~1.6× strength:
@@ -772,8 +850,13 @@ export function renderRGBA(
     for (let k = 0; k < edgeCount; k++) {
       const i = cache.edge[k];
       if (noise[i] < 0.5) continue;
-      layPlume(world, cache, i % width, (i / width) | 0, i, SMOKE_EDGE_STRENGTH * 1.6, 0.12, SMOKE_EDGE_LEN_SCALE, 2);
+      if (!cold) {
+        const sch = schedHash01(i);
+        if (sch < slotLo || sch >= slotHi) continue;
+      }
+      layPlume(world, cache, i % width, (i / width) | 0, i, SMOKE_EDGE_STRENGTH * 1.6, 0.12, SMOKE_EDGE_LEN_SCALE, 2, gain);
     }
+    cache.frameCounter++;
     // Composite: optical depth → alpha (1 − e^−τ), colour by soot fraction.
     for (let i = 0; i < n; i++) {
       const tau = smoke[i];

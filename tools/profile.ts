@@ -65,14 +65,21 @@ console.log(`  ${'TOTAL'.padEnd(28)} ${(total / STEPS).toFixed(3)}`);
 const rgba = new Uint8ClampedArray(world.width * world.height * 4);
 const FRAMES = 120;
 console.log(`\nrender (ms/frame, ${FRAMES} frames)`);
-for (const v of VIEW_MODES) {
-  for (let f = 0; f < 30; f++) renderRGBA(world, rgba, { view: v.id }); // JIT warm-up
+function timeView(label: string, view: (typeof VIEW_MODES)[number]['id'], smoke?: boolean): void {
+  for (let f = 0; f < 30; f++) renderRGBA(world, rgba, { view, smoke }); // JIT warm-up
   const t0 = performance.now();
   for (let f = 0; f < FRAMES; f++) {
     world.clock.time += 0.016; // animate the flicker so the path is the live one
-    renderRGBA(world, rgba, { view: v.id });
+    renderRGBA(world, rgba, { view, smoke });
   }
-  console.log(`  ${v.id.padEnd(28)} ${((performance.now() - t0) / FRAMES).toFixed(3)}`);
+  console.log(`  ${label.padEnd(28)} ${((performance.now() - t0) / FRAMES).toFixed(3)}`);
+}
+for (const v of VIEW_MODES) {
+  timeView(v.id, v.id);
+  // The terrain view minus smoke: `terrain - terrain (no smoke)` is the cost of
+  // the plumes alone, which is the only number a smoke change should move (the
+  // ground composition is a separate item).
+  if (v.id === 'terrain') timeView('terrain (no smoke)', v.id, false);
 }
 {
   const t0 = performance.now();
