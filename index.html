@@ -40,8 +40,10 @@
       }
       #stage {
         position: relative;
-        width: min(78vmin, 768px);
-        height: min(78vmin, 768px);
+        /* Square; leaves room for the fixed HUD strip at the bottom so the map
+           and the readout never overlap on a laptop-height window. */
+        width: min(calc(100vh - 250px), 92vmin, 768px);
+        height: min(calc(100vh - 250px), 92vmin, 768px);
       }
       #view,
       #overlay {
@@ -86,9 +88,9 @@
     </div>
     <footer>
       <kbd>Terrain</kbd> paints the landscape (pause to author) &nbsp;·&nbsp;
-      <kbd>Fire command</kbd> arms crew / engine / air-tanker orders &nbsp;·&nbsp;
-      white-hot cells are a crown run, grey ash is where it passed &nbsp;·&nbsp;
-      the smoldering scar edge is live — deny it fuel
+      <kbd>Fire command</kbd> arms crew / engine / air-tanker orders — the cursor shows the footprint &nbsp;·&nbsp;
+      the smoldering scar edge is live — deny it fuel &nbsp;·&nbsp;
+      hover a cell for its readout; the legend under <kbd>View</kbd> names the colours
     </footer>
     <script type="module" src="/src/main.ts"></script>
   </body>

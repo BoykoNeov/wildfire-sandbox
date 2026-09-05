@@ -35,7 +35,7 @@ claim here can be checked in under a minute.
 | | |
 |---|---|
 | Modules | `src/sim/emc.ts` (pure), `src/sim/fuelMoistureSystem.ts` |
-| Form | Fine dead fuel relaxes toward the Simard three-branch equilibrium moisture `M ← M + (M* − M)(1 − e^{−dt/τ})`, τ = 1 h. Under rain the target is a saturation fraction (0.6) with τ = 30 min — a **sandbox simplification**, precipitation response has no tidy standard. |
+| Form | Fine dead fuel relaxes toward the Simard three-branch equilibrium moisture `M ← M + (M* − M)(1 − e^{−dt/τ})`, τ = 1 h. Under rain the target is a saturation fraction (0.6) with τ = 30 min — a **sandbox simplification**, precipitation response has no tidy standard. Ticks shorter than 8 s are time-sliced (each row band integrated every K ticks over K·dt; exact for exponential relaxation, see the class header). |
 | Encoding | `layers.moisture` is a Uint8 with a *linear* 0..255 ↔ 0..1 meaning (`src/core/moisture.ts`, plan §D6). Dead fuel only. Live moisture is a scenario scalar on the fire model. |
 | Pinned by | `tests/emc.test.ts`, `tests/fuelMoisture.test.ts`, `tests/moisture.test.ts` |
 
@@ -111,6 +111,10 @@ upslope only.
   stand instead; import is the upgrade path (handoff §5.3).
 - **Structures, WUI, industrial fuels** — the `IgnitableEntity` seam exists and
   is empty (handoff §5).
+- **Smoke.** The plumes the renderer draws are a *visual cue*: a stateless
+  downwind streak per flaming / smouldering cell, scaled by wind, recorded
+  intensity and crown state. No emission factors, no dispersion, no plume rise;
+  nothing in the sim reads them (`src/render/palette.ts`, Phase-7 plan).
 - **Validation.** No comparison against observed fires. Do not present a run as
   a prediction.
 

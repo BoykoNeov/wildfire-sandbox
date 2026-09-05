@@ -20,7 +20,13 @@ npm run typecheck  # tsc --noEmit, strict
 npm run build      # typecheck + vite build
 npm run frame      # headless: run the real sim, write frame.png (smoke check)
 npm run frame -- timber-crown-run 3000 intensity   # any preset, steps, view
+npm run profile    # ms/step per system + ms/frame per view (esbuild bundle → plain node)
+npm run profile -- timber-crown-run 3000
 ```
+
+**Profile only with `npm run profile`.** vite-node / vitest rewrite imports into
+namespace-object property accesses that V8 cannot optimise in hot loops; timings
+taken through them are 5–10× too slow and misattribute cost.
 
 The browser takes `?scenario=<preset-id>`; presets live in `src/scenario/presets.ts`.
 
@@ -60,6 +66,14 @@ fire model** when a cell ignites; spotting, stats and the renderer read them.
 **Pipeline order is load-bearing** and lives in one place, `loadScenario`:
 `weather → moisture → crew → engine → aircraft → retardant → fire → spotting`.
 
+**Renderer discipline** (`src/render/palette.ts`): `renderRGBA` is a pure
+function of world state — animated effects (flicker, shimmer, smoke) derive from
+`clock.time` + a cell hash, never `world.rng`. Static shading (hillshade,
+contours) is cached per world; anything that paints `elevation`/`fuel` must call
+`invalidateTerrainShading(world)` (the editor does via `onPaint`). Unit markers,
+cursors and wind arrows draw on the screen-resolution overlay canvas
+(`overlay.ts`), never on the pixel view.
+
 ## Layout
 
 ```
@@ -70,11 +84,13 @@ src/sim/       pure science modules (rothermel, anderson13, emc, windAdjustment,
                spotting, suppression agents, retardant) + stats (pure)
 src/gen/       terrain generation (seeded value noise)
 src/scenario/  Scenario data + loadScenario (the ONE pipeline builder) + presets
-src/render/    palette (shared colour composition, view modes), canvas renderer, wind overlay
+src/render/    palette (shared colour composition, view modes, smoke, per-world shading cache),
+               canvas renderer, overlay (wind arrows, unit glyphs, cursor on the crisp canvas)
 src/editor/    browser-only terrain editor + suppression command shell
-src/ui/        browser-only HUD (stats reader + run controls)
+src/ui/        browser-only HUD (stats reader + run controls + legend + perf readout)
 src/main.ts    browser entry: loadScenario + renderer + editor + command + HUD, wall-clock pacing
-tools/         renderFrame.ts — headless PNG of any preset/view, same loader
+tools/         renderFrame.ts — headless PNG of any preset/view, same loader;
+               profile.ts — per-system / per-view timings (run via `npm run profile`)
 tests/         headless tests — simulation.test.ts is the architecture proof
 docs/          science.md (model card), plans/ (per-phase plans + decisions)
 ```
@@ -98,6 +114,10 @@ P3 dynamic wind/rain/spotting ✅ → P4 firefighting doctrine ✅ → P5 polish
 (5-viz ✅, 5a stats HUD ✅, 5b scenarios ✅, 5c save/load deferred) → P6 science
 hurdles (intensity layer, wind adjustment factor, crown fire, perf) ✅ →
 heat-driven ember production (spotting reads `layers.intensity` via Byram flame
-length) ✅. Next: the honest gaps in `docs/science.md` §9 (Huygens wavefront,
-per-class dead moisture, live-moisture curve, intensity-driven ember loft), then
-the additive future phases (WUI structures → industrial). Each phase must be runnable and verifiable before the next.
+length) ✅ → P7 visuals & performance part 1 ✅ (3–4× faster step, render cache,
+smoke, contours, crisp overlays, legend, profiler; part 2 is a written plan in
+`docs/plans/phase-7-visuals-performance.md`). Next: P7 part 2 items A–C (smoke at
+constant cost, ground-colour cache, explicit front list), the honest gaps in
+`docs/science.md` §9 (Huygens wavefront, per-class dead moisture, live-moisture
+curve, intensity-driven ember loft), then the additive future phases (WUI
+structures → industrial). Each phase must be runnable and verifiable before the next.

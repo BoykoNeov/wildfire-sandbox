@@ -20,6 +20,7 @@ npm test           # headless sim tests (the architecture proof lives here)
 npm run typecheck  # strict TypeScript, no emit
 npm run frame      # headless: run the real sim and write frame.png
 npm run frame -- timber-crown-run 3000 intensity   # any preset · steps · view
+npm run profile    # where the time goes: ms/step per system, ms/frame per view
 ```
 
 Open `http://localhost:5173/?scenario=timber-crown-run` (or pick a unit in the
@@ -50,9 +51,10 @@ equation, its source, its test and every deliberate omission are in
 
 Phase 1 core CA + seams → Phase 2 science anchor → Phase 3 dynamic world →
 Phase 4 firefighting → Phase 5 polish (scenarios, stats HUD; save/load deferred)
-→ Phase 6 science hurdles (intensity layer, wind reference, crown fire) — all
-landed; see [`docs/plans/`](./docs/plans/). Structures/WUI and industrial fires
-are additive later phases.
+→ Phase 6 science hurdles (intensity layer, wind reference, crown fire) → Phase 7
+visuals & performance (part 1: faster step, smoke, contours, crisp overlays,
+legend, profiler) — all landed; see [`docs/plans/`](./docs/plans/). Phase 7 part 2
+is planned there. Structures/WUI and industrial fires are additive later phases.
 
 ## License
 
