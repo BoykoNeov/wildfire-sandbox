@@ -185,6 +185,14 @@ export class Aircraft implements ISuppressionAgent {
   get isLoaded(): boolean {
     return this.loaded;
   }
+  /** Drop footprint radius [cells] — for the command overlay's cursor and target outline. */
+  get footprintRadius(): number {
+    return this.dropRadius;
+  }
+  /** The load the head sortie will drop, or null when nothing is queued. */
+  get pendingLoad(): AerialLoad | null {
+    return this.orders.length ? this.orders[0].load : null;
+  }
 
   /** The cell the aircraft is flying toward: its base while returning, else the drop
    *  target. Null when idle at base. */

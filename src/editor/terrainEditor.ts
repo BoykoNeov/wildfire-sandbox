@@ -1,6 +1,7 @@
-import type { WorldState } from '../core/world';
+import { FireState, type WorldState } from '../core/world';
 import { byteToFraction } from '../core/moisture';
 import { Fuel } from '../sim/basicFuelModel';
+import { CrownFire } from '../sim/crownFire';
 import { ignite } from '../gen/terrain';
 import { forEachStrokeCell, paintStroke } from './brush';
 
@@ -25,7 +26,25 @@ import { forEachStrokeCell, paintStroke } from './brush';
  */
 
 type PaintTool = 'elevation' | 'fuel' | 'moisture' | 'canopy';
-type Tool = PaintTool | 'ignite';
+export type Tool = PaintTool | 'ignite';
+
+export interface TerrainEditorOptions {
+  /**
+   * Called after every stroke with the tool that painted. The renderer caches
+   * hillshade / contours, so `main.ts` uses this to invalidate them when
+   * elevation (or fuel, which decides where water hides contours) changes.
+   */
+  onPaint?: (tool: Tool) => void;
+}
+
+/** Cursor tint per editor tool, for the overlay cursor. */
+const TOOL_RGB: Record<Tool, string> = {
+  elevation: '235, 225, 200',
+  fuel: '200, 230, 120',
+  moisture: '120, 190, 255',
+  canopy: '110, 210, 130',
+  ignite: '255, 150, 60',
+};
 
 const TOOLS: ReadonlyArray<{ id: Tool; label: string }> = [
   { id: 'elevation', label: 'Elevation' },
@@ -65,6 +84,7 @@ export class TerrainEditor {
 
   private painting = false;
   private last: { x: number; y: number } | null = null;
+  private _hover: { x: number; y: number } | null = null;
 
   // Controls whose visibility toggles with the active tool.
   private readonly valueRows = new Map<PaintTool, HTMLElement>();
@@ -73,6 +93,7 @@ export class TerrainEditor {
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly world: WorldState,
+    private readonly opts: TerrainEditorOptions = {},
   ) {
     this.buildToolbar();
     this.updateValueVisibility();
@@ -88,6 +109,16 @@ export class TerrainEditor {
   /** The frame loop reads this to decide whether to step the sim. */
   get paused(): boolean {
     return this._paused;
+  }
+
+  /** The cell under the pointer (null when it has left the canvas) — for the overlay cursor. */
+  get hover(): { x: number; y: number } | null {
+    return this._hover;
+  }
+
+  /** The active tool's footprint radius [cells] and cursor tint, for the overlay cursor. */
+  get cursor(): { radius: number; rgb: string; square: boolean } {
+    return { radius: this.radius, rgb: TOOL_RGB[this.tool], square: false };
   }
 
   // --- pointer → cells ------------------------------------------------------
@@ -115,6 +146,7 @@ export class TerrainEditor {
 
   private onPointerMove = (e: PointerEvent): void => {
     const c = this.cellAt(e);
+    this._hover = c;
     this.updateReadout(c);
     if (!this.painting) return;
     this.applyStroke(this.last ?? c, c);
@@ -128,6 +160,7 @@ export class TerrainEditor {
   };
 
   private onPointerLeave = (): void => {
+    this._hover = null;
     this.readout.textContent = '—';
   };
 
@@ -142,10 +175,12 @@ export class TerrainEditor {
         // bed, so the model would flash it straight to Burned (a black speck).
         if (fuel[i] !== Fuel.Nonburnable) ignite(this.world, x, y);
       });
+      this.opts.onPaint?.(this.tool);
       return;
     }
     const layer = layers[this.tool];
     paintStroke(layer.data, width, height, from.x, from.y, to.x, to.y, this.radius, this.values[this.tool]);
+    this.opts.onPaint?.(this.tool);
   }
 
   // --- readout --------------------------------------------------------------
@@ -154,10 +189,19 @@ export class TerrainEditor {
     const { layers } = this.world;
     const i = layers.fuel.index(c.x, c.y);
     const elev = Math.round(layers.elevation.data[i]);
-    const fuelName = FUEL_NAME[layers.fuel.data[i]] ?? '?';
+    const fuelName = FUEL_NAME[layers.fuel.data[i]] ?? (layers.fuel.data[i] === Fuel.CutLine ? 'cut line' : '?');
     const moistPct = Math.round(byteToFraction(layers.moisture.data[i]) * 100);
     const canopy = layers.canopy.data[i];
-    this.readout.textContent = `(${c.x}, ${c.y})  ${elev} m · ${fuelName} · ${moistPct}% moist · canopy ${canopy}`;
+    // A cell the fire has touched also reports the fire model's own record of it.
+    const state = layers.fire.data[i];
+    let fireText = '';
+    if (state !== FireState.Unburned) {
+      const kw = layers.intensity.data[i];
+      const crown = layers.crown.data[i];
+      const crownText = crown === CrownFire.Active ? ' · active crown' : crown === CrownFire.Passive ? ' · torching' : '';
+      fireText = ` · ${state === FireState.Burning ? 'BURNING' : 'burned'} ${kw >= 1000 ? `${(kw / 1000).toFixed(1)}k` : kw.toFixed(0)} kW/m${crownText}`;
+    }
+    this.readout.textContent = `(${c.x}, ${c.y})  ${elev} m · ${fuelName} · ${moistPct}% moist · canopy ${canopy}${fireText}`;
   }
 
   // --- toolbar (DOM) --------------------------------------------------------

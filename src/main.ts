@@ -1,5 +1,5 @@
 import { CanvasRenderer } from './render/canvasRenderer';
-import { drawWindOverlay } from './render/overlay';
+import { drawBrushCursor, drawWindOverlay, makeViewport } from './render/overlay';
 import { TerrainEditor } from './editor/terrainEditor';
 import { SuppressionCommand } from './editor/suppressionCommand';
 import { loadScenario } from './scenario/scenario';
@@ -22,14 +22,20 @@ const { world, sim, crew, engine, aircraft, burnableCells } = loaded;
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const renderer = new CanvasRenderer(canvas, world);
 
-// A screen-resolution overlay canvas for crisp vector overlays (wind arrows).
+// A screen-resolution overlay canvas for crisp vector overlays: wind arrows,
+// unit markers, the brush / order cursor. Cleared and redrawn every frame.
 const overlay = document.getElementById('overlay') as HTMLCanvasElement;
 const overlayCtx = overlay.getContext('2d')!;
 
 // Terrain editor (Phase-2 step 5): brush-paint over the data layers. Writes layer
 // bytes only — never a system — so the invariants hold. It owns a pause flag so
-// you can author terrain without the front advancing.
-const editor = new TerrainEditor(canvas, world);
+// you can author terrain without the front advancing. Painting elevation or fuel
+// invalidates the renderer's cached hillshade / contours.
+const editor = new TerrainEditor(canvas, world, {
+  onPaint: (tool) => {
+    if (tool === 'elevation' || tool === 'fuel') renderer.invalidateTerrain();
+  },
+});
 
 // Phase-4 command shell: click/drag issues orders to the units (cut line, backburn,
 // direct attack, engine station, aerial drops). Browser-only, like the editor; it
@@ -63,7 +69,9 @@ const hud = new Hud(PRESETS, preset, timeScale, {
   },
   onWindOverlay: (on) => {
     windOverlay = on;
-    if (!on) overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+  },
+  onSmoke: (on) => {
+    renderer.smoke = on;
   },
 });
 
@@ -82,36 +90,57 @@ sizeOverlay();
 
 // Pace the sim by wall clock: `timeScale` sim-seconds per real second, whatever
 // the display refresh rate. Rothermel ROS on 30 m cells is metres per minute, so
-// the demo runs at 60–300× real time to be watchable. Steps per frame are capped
+// the demo runs at 60–600× real time to be watchable. Steps per frame are capped
 // so a slow machine slows the clock rather than freezing the page.
+const MAX_STEPS_PER_FRAME = 40;
 const stats = emptyStats();
 let last = performance.now();
 let carry = 0;
 let frameNo = 0;
+// Smoothed timings for the HUD's perf readout (exponential moving averages).
+let simMsPerStep = 0;
+let frameMs = 0;
+let stepsPerFrame = 0;
+const ema = (prev: number, x: number, k = 0.1): number => (prev === 0 ? x : prev + (x - prev) * k);
 
 function frame(now: number): void {
+  const frameStart = performance.now();
   const elapsed = Math.min(0.25, (now - last) / 1000); // clamp a background-tab jump
   last = now;
+  let steps = 0;
   if (!editor.paused && timeScale > 0) {
     carry += elapsed * timeScale;
-    const steps = Math.min(40, Math.floor(carry / DT));
+    steps = Math.min(MAX_STEPS_PER_FRAME, Math.floor(carry / DT));
+    const t0 = performance.now();
     for (let i = 0; i < steps; i++) sim.step(DT);
+    if (steps > 0) simMsPerStep = ema(simMsPerStep, (performance.now() - t0) / steps);
     carry -= steps * DT;
-    if (steps === 40) carry = 0; // fell behind: drop the backlog, keep the frame rate
+    if (steps === MAX_STEPS_PER_FRAME) carry = 0; // fell behind: drop the backlog, keep the frame rate
   }
+  stepsPerFrame = ema(stepsPerFrame, steps);
+
   // Always render, even when paused, so brush strokes appear immediately.
   renderer.render(world);
-  // Overlay the unit markers on top of the freshly-drawn frame.
-  command?.render();
-  if (windOverlay) {
-    sizeOverlay();
-    overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
-    drawWindOverlay(overlayCtx, world, overlay.width, overlay.height);
+
+  // Overlays on the crisp screen-resolution canvas, on top of the fresh frame.
+  sizeOverlay();
+  const vp = makeViewport(world, overlay.width, overlay.height, window.devicePixelRatio || 1);
+  overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+  if (windOverlay) drawWindOverlay(overlayCtx, world, vp);
+  command?.render(overlayCtx, vp);
+  const hover = editor.hover;
+  if (hover) {
+    // The cursor shows what a click will do: the armed order's footprint when a
+    // suppression tool is live, else the editor brush.
+    const c = command?.active ? command.cursor : editor.cursor;
+    drawBrushCursor(overlayCtx, vp, hover.x, hover.y, c.radius, c.rgb, c.square);
   }
+
+  frameMs = ema(frameMs, performance.now() - frameStart);
   // Stats are one O(cells) pass; every third frame is plenty for a readout.
   if (frameNo++ % 3 === 0) {
     computeStats(world, burnableCells, stats);
-    hud.update(stats, { crew, engine, aircraft });
+    hud.update(stats, { crew, engine, aircraft }, { simMsPerStep, frameMs, stepsPerFrame });
   }
   requestAnimationFrame(frame);
 }

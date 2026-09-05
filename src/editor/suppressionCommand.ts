@@ -3,6 +3,7 @@ import type { GroundCrew } from '../sim/groundCrew';
 import type { Engine } from '../sim/engine';
 import type { Aircraft } from '../sim/aircraft';
 import { forEachStrokeCell } from './brush';
+import { drawUnitMarkers, type Viewport } from '../render/overlay';
 
 /**
  * Phase-4 4a **player command shell** (`docs/plans/phase-4-firefighting.md`
@@ -65,9 +66,19 @@ const TOOLS: ReadonlyArray<{ id: CmdTool; label: string; needs: ToolNeeds }> = [
   { id: 'retardant', label: 'Retardant drop', needs: 'aircraft' },
 ];
 
+/** Cursor tint per armed tool (see `overlay.ts` colours: crew blue / engine green / tanker rust). */
+const TOOL_RGB: Record<CmdTool, string> = {
+  off: '255, 255, 255',
+  line: '80, 170, 255',
+  backburn: '255, 160, 60',
+  direct: '80, 170, 255',
+  engine: '90, 230, 150',
+  water: '110, 200, 255',
+  retardant: '235, 120, 85',
+};
+
 export class SuppressionCommand {
   private tool: CmdTool = 'off';
-  private readonly ctx: CanvasRenderingContext2D;
 
   private dragging = false;
   private last: { x: number; y: number } | null = null;
@@ -84,10 +95,6 @@ export class SuppressionCommand {
     private readonly engine?: Engine,
     private readonly aircraft?: Aircraft,
   ) {
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('2D canvas context unavailable');
-    this.ctx = ctx;
-
     this.buildToolbar();
     // Capture phase so an armed suppression tool intercepts the pointer before the
     // terrain editor's (bubble-phase) brush handler runs.
@@ -98,8 +105,23 @@ export class SuppressionCommand {
   }
 
   /** Whether an armed tool is intercepting pointer input (else the editor gets it). */
-  private get active(): boolean {
+  get active(): boolean {
     return this.tool !== 'off';
+  }
+
+  /** The armed tool's footprint radius [cells] and cursor tint, for the overlay cursor. */
+  get cursor(): { radius: number; rgb: string; square: boolean } {
+    switch (this.tool) {
+      case 'direct':
+        return { radius: 1, rgb: TOOL_RGB.direct, square: true }; // crew knockdown 3×3
+      case 'engine':
+        return { radius: 2, rgb: TOOL_RGB.engine, square: true }; // engine knockdown 5×5
+      case 'water':
+      case 'retardant':
+        return { radius: this.aircraft?.footprintRadius ?? 3, rgb: TOOL_RGB[this.tool], square: true };
+      default:
+        return { radius: 0, rgb: TOOL_RGB[this.tool], square: true };
+    }
   }
 
   // --- pointer → orders ------------------------------------------------------
@@ -166,66 +188,18 @@ export class SuppressionCommand {
     });
   }
 
-  // --- overlay marker (called by the frame loop AFTER renderer.render) -------
+  // --- overlay (called by the frame loop AFTER renderer.render) --------------
 
-  /** Stamp each wired unit's position and current target on top of the rendered frame. */
-  render(): void {
-    const ctx = this.ctx;
-    // The hand crew — omitted entirely when the roster has none.
-    if (this.crew) {
-      const crew = this.crew;
-      const target = crew.targetCell;
-      if (target) {
-        ctx.strokeStyle = 'rgba(80, 200, 255, 0.7)';
-        ctx.lineWidth = 0.6;
-        ctx.beginPath();
-        ctx.moveTo(crew.cellX + 0.5, crew.cellY + 0.5);
-        ctx.lineTo(target.x + 0.5, target.y + 0.5);
-        ctx.stroke();
-        dot(ctx, target.x, target.y, 1.2, 'rgba(80, 200, 255, 0.9)');
-      }
-      // The crew itself — a bright dot so it reads against fire and terrain alike.
-      dot(ctx, crew.cellX, crew.cellY, 2, '#eaf6ff');
-      dot(ctx, crew.cellX, crew.cellY, 1, '#1a6cff');
-    }
-
-    // The engine — a distinct green marker, dimmed while it has broken off to refill.
-    if (this.engine) {
+  /**
+   * Draw the unit markers on the screen-resolution overlay (`overlay.ts` owns the
+   * glyphs) and refresh the panel's water gauge. `vp` maps cells → overlay px.
+   */
+  render(ctx: CanvasRenderingContext2D, vp: Viewport): void {
+    drawUnitMarkers(ctx, { crew: this.crew, engine: this.engine, aircraft: this.aircraft }, vp);
+    if (this.engine && this.waterGauge) {
       const eng = this.engine;
-      const et = eng.targetCell;
-      if (et) {
-        ctx.strokeStyle = eng.isRefilling ? 'rgba(120,120,140,0.6)' : 'rgba(90,230,150,0.7)';
-        ctx.lineWidth = 0.6;
-        ctx.beginPath();
-        ctx.moveTo(eng.cellX + 0.5, eng.cellY + 0.5);
-        ctx.lineTo(et.x + 0.5, et.y + 0.5);
-        ctx.stroke();
-        dot(ctx, et.x, et.y, 1.2, eng.isRefilling ? 'rgba(120,120,140,0.9)' : 'rgba(90,230,150,0.9)');
-      }
-      dot(ctx, eng.cellX, eng.cellY, 2, '#eafff2');
-      dot(ctx, eng.cellX, eng.cellY, 1, eng.isRefilling ? '#8a8aa0' : '#12b866');
-      if (this.waterGauge) {
-        const pct = Math.round(eng.waterFraction * 100);
-        this.waterGauge.textContent = `Engine water: ${pct}%${eng.isRefilling ? ' (refilling…)' : ''}`;
-      }
-    }
-
-    // The air tanker — a rust-red marker (its slurry colour), dimmed while returning
-    // to base to reload; a line to its current drop target or home leg.
-    if (this.aircraft) {
-      const air = this.aircraft;
-      const at = air.targetCell;
-      if (at) {
-        ctx.strokeStyle = air.isReturning ? 'rgba(120,120,140,0.6)' : 'rgba(230,110,80,0.7)';
-        ctx.lineWidth = 0.6;
-        ctx.beginPath();
-        ctx.moveTo(air.cellX + 0.5, air.cellY + 0.5);
-        ctx.lineTo(at.x + 0.5, at.y + 0.5);
-        ctx.stroke();
-        dot(ctx, at.x, at.y, 1.2, air.isReturning ? 'rgba(120,120,140,0.9)' : 'rgba(230,110,80,0.9)');
-      }
-      dot(ctx, air.cellX, air.cellY, 2, '#ffe8e0');
-      dot(ctx, air.cellX, air.cellY, 1, air.isReturning ? '#8a8aa0' : '#e0562d');
+      const pct = Math.round(eng.waterFraction * 100);
+      this.waterGauge.textContent = `Engine water: ${pct}%${eng.isRefilling ? ' (refilling…)' : ''}`;
     }
   }
 
@@ -317,11 +291,3 @@ const buttonStyle: Partial<CSSStyleDeclaration> = {
   borderRadius: '4px',
   cursor: 'pointer',
 };
-
-/** Draw a filled cell-space dot (radius in backing pixels = cells). */
-function dot(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, fill: string): void {
-  ctx.fillStyle = fill;
-  ctx.beginPath();
-  ctx.arc(cx + 0.5, cy + 0.5, r, 0, Math.PI * 2);
-  ctx.fill();
-}

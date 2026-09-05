@@ -6,11 +6,12 @@ import { CrownFire } from '../sim/crownFire';
  * What the unburned landscape shows. Fire (flames, char, the live scar edge) is
  * drawn identically on every view so the front always reads; the views only
  * change what the ground underneath encodes:
- *  - `terrain`   — the composed scene: fuel colour × moisture tint × hillshade.
+ *  - `terrain`   — the composed scene: fuel colour × moisture tint × hillshade,
+ *                  with contour lines and smoke plumes (the only view with smoke).
  *  - `fuel`      — flat fuel classes (grass / brush / timber / rock / water / line).
  *  - `moisture`  — dead-fuel moisture, dry brown → wet blue (the layer that
  *                  decides everything; drops, knockdowns and drying read directly).
- *  - `elevation` — hypsometric tint + hillshade.
+ *  - `elevation` — hypsometric tint + hillshade + contours.
  *  - `canopy`    — canopy byte, bare → dense green (what can shelter, crown, spot).
  *  - `intensity` — burned cells by the fireline intensity that took them, a
  *                  heat ramp; unburned ground dimmed. The "how hard did it burn
@@ -29,6 +30,8 @@ export const VIEW_MODES: ReadonlyArray<{ id: ViewMode; label: string }> = [
 
 export interface RenderOptions {
   view?: ViewMode;
+  /** Draw smoke plumes (terrain view only). Default true. */
+  smoke?: boolean;
 }
 
 export interface Rgb {
@@ -40,13 +43,23 @@ export interface Rgb {
 /**
  * Shared colour composition for every renderer (the on-screen canvas and the
  * headless PNG exporter) so they never drift: `cellRGB` maps one cell to RGB,
- * `renderRGBA` composes a whole frame (per-cell colours + the fire-glow
+ * `renderRGBA` composes a whole frame (per-cell colours + smoke + the fire-glow
  * post-pass) into an RGBA buffer. Renderers are thin byte-copiers on top.
  *
  * Everything here is a **pure read** of world state (Phase-5 plan, decision #1).
- * Animated effects (flame flicker, water shimmer) derive from `clock.time` plus
- * an integer hash of the cell index — NEVER from `world.rng`, which would consume
- * draws the sim expects and desync the determinism golden (plan decision #2).
+ * Animated effects (flame flicker, water shimmer, drifting smoke) derive from
+ * `clock.time` plus an integer hash of the cell index — NEVER from `world.rng`,
+ * which would consume draws the sim expects and desync the determinism golden
+ * (plan decision #2).
+ *
+ * **Per-world render cache.** Hillshade, contour lines and the per-cell texture
+ * hash are static until someone paints elevation, so they are computed once into
+ * a {@link TerrainCache} and reused every frame (this halved the frame cost at
+ * 256²). The cache is keyed by world in a `WeakMap`, so `renderRGBA`'s signature
+ * is unchanged and the headless exporter gets it for free; the editor calls
+ * {@link invalidateTerrainShading} after a stroke that changes elevation or fuel.
+ * The cache also owns the per-frame scratch buffers (smoke accumulators, the
+ * scar-edge list) so the frame loop allocates nothing.
  */
 
 /** Deterministic per-cell hash → [0,1). Static across frames (texture, phases). */
@@ -80,6 +93,88 @@ function hillshade(world: WorldState, i: number, x: number, y: number): number {
   return 0.45 + 0.62 * (ndotl > 0 ? ndotl : 0);
 }
 
+/** Contour interval [m] drawn on the terrain / elevation views. */
+export const CONTOUR_INTERVAL_M = 50;
+/** Brightness multiplier of a contour cell (a thin, darker index line). */
+const CONTOUR_SHADE = 0.87;
+/** Elevation at/below which a nonburnable cell is water (terrain gen: water < ~300 m, rock > ~820 m). */
+const WATER_MAX_ELEV = 600;
+
+/**
+ * A cell sits on a contour line when the contour band changes between it and
+ * its west or north neighbour — one cell wide, so lines stay thin at any zoom.
+ * Under water the terrain is invisible, so no line is drawn there.
+ */
+function isContour(world: WorldState, i: number, x: number, y: number): boolean {
+  const { width, layers } = world;
+  const e = layers.elevation.data;
+  if (layers.fuel.data[i] === Fuel.Nonburnable && e[i] <= WATER_MAX_ELEV) return false;
+  const band = Math.floor(e[i] / CONTOUR_INTERVAL_M);
+  if (x > 0 && Math.floor(e[i - 1] / CONTOUR_INTERVAL_M) !== band) return true;
+  if (y > 0 && Math.floor(e[i - width] / CONTOUR_INTERVAL_M) !== band) return true;
+  return false;
+}
+
+/** Static per-world shading + per-frame scratch (see the module header). */
+interface TerrainCache {
+  /** hillshade × texture jitter × contour, per cell. */
+  shade: Float32Array;
+  /** `hash01(i)` per cell. */
+  noise: Float32Array;
+  /** Smoke optical depth accumulator, per cell (per-frame scratch). */
+  smoke: Float32Array;
+  /** Soot-weighted smoke accumulator, per cell — colours the plume grey→dark. */
+  soot: Float32Array;
+  /** Indices of Burned cells on the live scar edge this frame + their count. */
+  edge: Int32Array;
+  edgeCount: number;
+  dirty: boolean;
+}
+
+const caches = new WeakMap<WorldState, TerrainCache>();
+
+function cacheFor(world: WorldState): TerrainCache {
+  let c = caches.get(world);
+  const n = world.width * world.height;
+  if (c === undefined || c.shade.length !== n) {
+    c = {
+      shade: new Float32Array(n),
+      noise: new Float32Array(n),
+      smoke: new Float32Array(n),
+      soot: new Float32Array(n),
+      edge: new Int32Array(n),
+      edgeCount: 0,
+      dirty: true,
+    };
+    caches.set(world, c);
+  }
+  if (c.dirty) {
+    const { width } = world;
+    for (let i = 0; i < n; i++) {
+      const x = i % width;
+      const y = (i / width) | 0;
+      const h = hash01(i);
+      c.noise[i] = h;
+      // Small static per-cell brightness jitter breaks up the fuel-band posterization.
+      let s = hillshade(world, i, x, y) * (1 + (h - 0.5) * 0.1);
+      if (isContour(world, i, x, y)) s *= CONTOUR_SHADE;
+      c.shade[i] = s;
+    }
+    c.dirty = false;
+  }
+  return c;
+}
+
+/**
+ * Mark a world's static shading (hillshade, contours, texture) stale — call after
+ * painting the `elevation` or `fuel` layer. Cheap; the rebuild happens lazily on
+ * the next frame.
+ */
+export function invalidateTerrainShading(world: WorldState): void {
+  const c = caches.get(world);
+  if (c) c.dirty = true;
+}
+
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
@@ -102,19 +197,50 @@ const FUEL_WET: Record<number, Rgb> = {
 };
 /** Moisture fraction at/above which a fuel reads fully lush. */
 const WET_FULL = 0.35;
+/**
+ * The same endpoints as flat typed arrays indexed `fuelId*3 + channel`, for the
+ * per-frame hot path (a `Record` lookup per cell per frame is a dictionary probe;
+ * this is a load). `FUEL_HAS_BED[fuelId]` = 1 when the fuel has dry/wet colours.
+ */
+const FUEL_DRY_T = new Float32Array(8 * 3);
+const FUEL_WET_T = new Float32Array(8 * 3);
+const FUEL_HAS_BED = new Uint8Array(8);
+for (const idStr of Object.keys(FUEL_DRY)) {
+  const id = Number(idStr);
+  const d = FUEL_DRY[id];
+  const w = FUEL_WET[id];
+  FUEL_DRY_T[id * 3] = d.r;
+  FUEL_DRY_T[id * 3 + 1] = d.g;
+  FUEL_DRY_T[id * 3 + 2] = d.b;
+  FUEL_WET_T[id * 3] = w.r;
+  FUEL_WET_T[id * 3 + 1] = w.g;
+  FUEL_WET_T[id * 3 + 2] = w.b;
+  FUEL_HAS_BED[id] = 1;
+}
 
 /** Aerial fire-retardant (Phos-Chek-style) rust-red slurry. */
 const RETARDANT_RGB: Rgb = { r: 200, g: 70, b: 45 };
 
 /**
  * Map one cell to an RGB colour. Writes into `out` to avoid a per-cell
- * allocation in the hot loop.
+ * allocation in the hot loop. `shade`/`noise` are the cached static terms
+ * (see {@link TerrainCache}); computed on the fly when omitted. `edge` is the
+ * cell's {@link scarEdge} class when the caller already has it.
  */
-export function cellRGB(world: WorldState, i: number, out: Rgb, view: ViewMode = 'terrain'): void {
+export function cellRGB(
+  world: WorldState,
+  i: number,
+  out: Rgb,
+  view: ViewMode = 'terrain',
+  shade?: number,
+  noise?: number,
+  edge?: 0 | 1 | 2,
+): void {
   const { width, layers, clock } = world;
   const x = i % width;
   const y = (i / width) | 0;
   const state = layers.fire.data[i];
+  const h = noise ?? hash01(i);
 
   if (state === FireState.Burning) {
     // Flame colour by age: a young front burns white-hot, an old flame dies
@@ -123,7 +249,7 @@ export function cellRGB(world: WorldState, i: number, out: Rgb, view: ViewMode =
     // incommensurate sines phased by the cell hash — clock-driven, RNG-free.
     const t = layers.burnElapsed.data[i];
     const age = t / (t + 6);
-    const phase = hash01(i) * Math.PI * 2;
+    const phase = h * Math.PI * 2;
     const f =
       1 + 0.1 * Math.sin(clock.time * 9 + phase) + 0.06 * Math.sin(clock.time * 23 + phase * 1.7);
     if (age < 0.5) {
@@ -165,7 +291,7 @@ export function cellRGB(world: WorldState, i: number, out: Rgb, view: ViewMode =
     // Hash-varied char so the scar reads as texture, not a flat black blob. A
     // crown-consumed cell is pale grey ash (the canopy is gone); a surface burn
     // under an intact canopy keeps the dark brown-black char.
-    const j = (hash01(i) - 0.5) * 14;
+    const j = (h - 0.5) * 14;
     const cr = layers.crown.data[i];
     if (cr === CrownFire.Active) {
       out.r = 118 + j;
@@ -186,13 +312,13 @@ export function cellRGB(world: WorldState, i: number, out: Rgb, view: ViewMode =
     // edge against nonburnable (rock, water, a cut line) goes cold black — a
     // held line reads held; a merely-wetted edge keeps smoldering ("sleeping").
     // Flames actually arriving next door read brighter still.
-    const edge = scarEdge(world, x, y);
-    if (edge === 2) {
+    const e = edge ?? scarEdge(world, x, y);
+    if (e === 2) {
       out.r = out.r * 0.35 + 168 * 0.65;
       out.g = out.g * 0.35 + 70 * 0.65;
       out.b = out.b * 0.35 + 30 * 0.65;
-    } else if (edge === 1) {
-      const f = 0.75 + 0.25 * Math.sin(clock.time * 1.5 + hash01(i) * Math.PI * 2);
+    } else if (e === 1) {
+      const f = 0.75 + 0.25 * Math.sin(clock.time * 1.5 + h * Math.PI * 2);
       out.r = out.r * 0.5 + 122 * 0.5 * f;
       out.g = out.g * 0.5 + 48 * 0.5 * f;
       out.b = out.b * 0.5 + 22 * 0.5 * f;
@@ -201,31 +327,50 @@ export function cellRGB(world: WorldState, i: number, out: Rgb, view: ViewMode =
     return;
   }
 
-  const shade = hillshade(world, i, x, y);
-  // Small static per-cell brightness jitter breaks up the fuel-band posterization.
-  const tex = 1 + (hash01(i) - 0.5) * 0.1;
+  // Unburned: the static lighting term (hillshade × texture × contour).
+  const s =
+    shade ??
+    hillshade(world, i, x, y) * (1 + (h - 0.5) * 0.1) * (isContour(world, i, x, y) ? CONTOUR_SHADE : 1);
   const retardant = layers.retardant.data[i];
   const fuelId = layers.fuel.data[i];
-  const dry = FUEL_DRY[fuelId];
 
   if (view !== 'terrain') {
-    dataView(world, i, view, fuelId, shade, out);
+    dataView(world, i, view, fuelId, s, out);
     if (retardant > 0 && view !== 'intensity') blendRetardant(out, retardant);
     clampRgb(out);
     return;
   }
 
-  if (dry !== undefined) {
-    const wet = FUEL_WET[fuelId];
-    const w = Math.min(1, layers.moisture.data[i] / 255 / WET_FULL);
-    const s = shade * tex;
-    out.r = lerp(dry.r, wet.r, w) * s;
-    out.g = lerp(dry.g, wet.g, w) * s;
-    out.b = lerp(dry.b, wet.b, w) * s;
+  terrainRGB(fuelId, layers.moisture.data[i], layers.elevation.data[i], s, h, clock.time, out);
+  // Slurry overlay: blend the base colour toward retardant rust by remaining
+  // potency (0..255). A fresh drop reads strong; the line fades as it decays.
+  if (retardant > 0) blendRetardant(out, retardant);
+  clampRgb(out);
+}
+
+/**
+ * The `terrain` view's unburned ground colour (before retardant and clamping).
+ * Takes the cell's raw layer values, not the world, so the frame loop can feed it
+ * from hoisted typed arrays.
+ */
+function terrainRGB(
+  fuelId: number,
+  moistByte: number,
+  elev: number,
+  s: number,
+  h: number,
+  time: number,
+  out: Rgb,
+): void {
+  if (fuelId < 8 && FUEL_HAS_BED[fuelId] === 1) {
+    const w = Math.min(1, moistByte / 255 / WET_FULL);
+    const k = fuelId * 3;
+    out.r = (FUEL_DRY_T[k] + (FUEL_WET_T[k] - FUEL_DRY_T[k]) * w) * s;
+    out.g = (FUEL_DRY_T[k + 1] + (FUEL_WET_T[k + 1] - FUEL_DRY_T[k + 1]) * w) * s;
+    out.b = (FUEL_DRY_T[k + 2] + (FUEL_WET_T[k + 2] - FUEL_DRY_T[k + 2]) * w) * s;
   } else if (fuelId === Fuel.CutLine) {
     // Firefighter control line: a tan scratch of bared mineral soil, distinct
     // from grey rock so a hand/dozer line reads as built, not natural.
-    const s = shade * tex;
     out.r = 194 * s;
     out.g = 168 * s;
     out.b = 120 * s;
@@ -233,26 +378,19 @@ export function cellRGB(world: WorldState, i: number, out: Rgb, view: ViewMode =
     // Nonburnable is either low-lying water or high bare rock; terrain gen puts
     // water below ~300 m and rock above ~820 m, so split on elevation instead of
     // painting mountain peaks lake-blue.
-    const elev = layers.elevation.data[i];
-    if (elev > 600) {
-      const s = shade * tex;
+    if (elev > WATER_MAX_ELEV) {
       out.r = 128 * s;
       out.g = 125 * s;
       out.b = 118 * s; // bare rock — hillshade does the work
     } else {
       // Water: depth-shaded (deeper = darker) with a slow deterministic shimmer.
       const depth = Math.min(1, Math.max(0, 1 - elev / 300));
-      const f = 1 + 0.05 * Math.sin(clock.time * 0.8 + hash01(i) * Math.PI * 2);
+      const f = 1 + 0.05 * Math.sin(time * 0.8 + h * Math.PI * 2);
       out.r = lerp(72, 34, depth) * f;
       out.g = lerp(108, 60, depth) * f;
       out.b = lerp(152, 108, depth) * f;
     }
   }
-
-  // Slurry overlay: blend the base colour toward retardant rust by remaining
-  // potency (0..255). A fresh drop reads strong; the line fades as it decays.
-  if (retardant > 0) blendRetardant(out, retardant);
-  clampRgb(out);
 }
 
 function blendRetardant(out: Rgb, retardant: number): void {
@@ -275,9 +413,9 @@ const WATER_FLAT: Rgb = { r: 58, g: 96, b: 150 };
 /**
  * Fireline-intensity heat ramp: log10(kW/m) from 1 (10 kW/m, a creeping
  * surface fire) to 4 (10 000 kW/m, an active crown run): dark plum → red →
- * orange → yellow → white.
+ * orange → yellow → white. Exported so the HUD legend draws the same ramp.
  */
-function heatRamp(kwPerM: number, out: Rgb): void {
+export function heatRamp(kwPerM: number, out: Rgb): void {
   const t = Math.min(1, Math.max(0, (Math.log10(Math.max(kwPerM, 1)) - 1) / 3));
   if (t < 0.33) {
     const k = t / 0.33;
@@ -297,11 +435,54 @@ function heatRamp(kwPerM: number, out: Rgb): void {
   }
 }
 
+/**
+ * Dead-fuel moisture ramp (fraction → colour): 0% brown → 15% (the Anderson Mx
+ * band) tan → 40%+ blue. Exported so the HUD legend draws the same ramp.
+ */
+export function moistureRamp(fraction: number, out: Rgb): void {
+  const t = Math.min(1, Math.max(0, fraction / 0.4));
+  if (t < 0.375) {
+    const k = t / 0.375;
+    out.r = lerp(150, 214, k);
+    out.g = lerp(80, 190, k);
+    out.b = lerp(30, 120, k);
+  } else {
+    const k = (t - 0.375) / 0.625;
+    out.r = lerp(214, 40, k);
+    out.g = lerp(190, 110, k);
+    out.b = lerp(120, 220, k);
+  }
+}
+
+/** Hypsometric tint (elevation fraction of 1000 m → colour), before hillshade. Exported for the legend. */
+export function elevationRamp(fraction: number, out: Rgb): void {
+  const t = Math.min(1, Math.max(0, fraction));
+  if (t < 0.5) {
+    const k = t / 0.5;
+    out.r = lerp(80, 200, k);
+    out.g = lerp(150, 180, k);
+    out.b = lerp(80, 110, k);
+  } else {
+    const k = (t - 0.5) / 0.5;
+    out.r = lerp(200, 235, k);
+    out.g = lerp(180, 232, k);
+    out.b = lerp(110, 228, k);
+  }
+}
+
+/** Canopy ramp (byte fraction → colour): bare tan → dense dark green. Exported for the legend. */
+export function canopyRamp(fraction: number, out: Rgb): void {
+  const c = Math.min(1, Math.max(0, fraction));
+  out.r = lerp(200, 20, c);
+  out.g = lerp(190, 110, c);
+  out.b = lerp(150, 40, c);
+}
+
 /** Unburned-cell colour for the data views (see {@link ViewMode}). */
 function dataView(world: WorldState, i: number, view: ViewMode, fuelId: number, shade: number, out: Rgb): void {
   const { layers } = world;
   const elev = layers.elevation.data[i];
-  const isWater = fuelId === Fuel.Nonburnable && elev <= 600;
+  const isWater = fuelId === Fuel.Nonburnable && elev <= WATER_MAX_ELEV;
   switch (view) {
     case 'fuel': {
       const c = isWater ? WATER_FLAT : (FUEL_FLAT[fuelId] ?? FUEL_FLAT[Fuel.Nonburnable]);
@@ -318,20 +499,7 @@ function dataView(world: WorldState, i: number, view: ViewMode, fuelId: number, 
         out.b = 84 * shade;
         return;
       }
-      // 0% brown → 15% (the Anderson Mx band) tan → 40%+ blue.
-      const m = layers.moisture.data[i] / 255;
-      const t = Math.min(1, m / 0.4);
-      if (t < 0.375) {
-        const k = t / 0.375;
-        out.r = lerp(150, 214, k);
-        out.g = lerp(80, 190, k);
-        out.b = lerp(30, 120, k);
-      } else {
-        const k = (t - 0.375) / 0.625;
-        out.r = lerp(214, 40, k);
-        out.g = lerp(190, 110, k);
-        out.b = lerp(120, 220, k);
-      }
+      moistureRamp(layers.moisture.data[i] / 255, out);
       const s = 0.75 + 0.25 * shade;
       out.r *= s;
       out.g *= s;
@@ -346,18 +514,7 @@ function dataView(world: WorldState, i: number, view: ViewMode, fuelId: number, 
         return;
       }
       // Hypsometric: low green → tan → brown → grey-white peaks, hillshaded.
-      const t = Math.min(1, Math.max(0, elev / 1000));
-      if (t < 0.5) {
-        const k = t / 0.5;
-        out.r = lerp(80, 200, k);
-        out.g = lerp(150, 180, k);
-        out.b = lerp(80, 110, k);
-      } else {
-        const k = (t - 0.5) / 0.5;
-        out.r = lerp(200, 235, k);
-        out.g = lerp(180, 232, k);
-        out.b = lerp(110, 228, k);
-      }
+      elevationRamp(elev / 1000, out);
       out.r *= shade;
       out.g *= shade;
       out.b *= shade;
@@ -370,10 +527,10 @@ function dataView(world: WorldState, i: number, view: ViewMode, fuelId: number, 
         out.b = 150;
         return;
       }
-      const c = layers.canopy.data[i] / 255;
-      out.r = lerp(200, 20, c) * shade;
-      out.g = lerp(190, 110, c) * shade;
-      out.b = lerp(150, 40, c) * shade;
+      canopyRamp(layers.canopy.data[i] / 255, out);
+      out.r *= shade;
+      out.g *= shade;
+      out.b *= shade;
       return;
     }
     case 'intensity':
@@ -419,61 +576,239 @@ function scarEdge(world: WorldState, x: number, y: number): 0 | 1 | 2 {
   return edge;
 }
 
-/** Glow the post-pass adds around each burning cell: [dRed, dGreen] at r=1, r=2. */
-const GLOW_NEAR_R = 34;
-const GLOW_NEAR_G = 13;
-const GLOW_FAR_R = 12;
-const GLOW_FAR_G = 4;
+// ───────────────────────── fire glow ─────────────────────────
+
+/**
+ * Glow kernel: the 24 cells around a burning cell with a radial falloff
+ * (1 at distance 1 → 0.12 at 2√2), so the bloom is round, not a box. Weights
+ * scale [dRed, dGreen] = [36, 14] × crown boost.
+ */
+const GLOW_DX: number[] = [];
+const GLOW_DY: number[] = [];
+const GLOW_W: number[] = [];
+for (let dy = -2; dy <= 2; dy++) {
+  for (let dx = -2; dx <= 2; dx++) {
+    if (dx === 0 && dy === 0) continue;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    GLOW_DX.push(dx);
+    GLOW_DY.push(dy);
+    GLOW_W.push(Math.exp(-(d - 1) * 1.05));
+  }
+}
+const GLOW_R = 36;
+const GLOW_G = 14;
+
+// ───────────────────────── smoke ─────────────────────────
+
+/**
+ * Smoke is a **visual cue, not a dispersion model** (`docs/science.md` §9): each
+ * flaming cell and each smouldering scar-edge cell lays a plume of optical depth
+ * downwind along the wind vector sampled at the source, tapering with distance,
+ * widening as it goes, with a clock-driven meander and puff modulation so it
+ * reads as drifting. Stateless — a pure function of the frame's world state —
+ * so the headless PNG shows the same plume the browser does and nothing has to
+ * be stepped. Flames stay legible: the plume starts one cell downwind and the
+ * composite is capped at {@link SMOKE_MAX_ALPHA}.
+ */
+const SMOKE_MAX_ALPHA = 0.7;
+/** Plume length [cells] = SMOKE_LEN_BASE + wind (m/s) × SMOKE_LEN_PER_MPS, capped. */
+const SMOKE_LEN_BASE = 3;
+const SMOKE_LEN_PER_MPS = 1.4;
+const SMOKE_LEN_MAX = 28;
+/**
+ * Light (fresh, distant) and dark (sooty, near a crown run) smoke colours. The
+ * light end is a cool off-white so it separates from warm grass and olive brush.
+ */
+const SMOKE_LIGHT: Rgb = { r: 224, g: 222, b: 226 };
+const SMOKE_DARK: Rgb = { r: 84, g: 80, b: 78 };
+/**
+ * Source strengths. In the mounted model flames last seconds while a cell takes
+ * minutes to cross, so at any instant only a handful of cells are literally
+ * `Burning`; the *smouldering scar edge* is where most of the smoke honestly
+ * comes from (Burned cells stay spread sources, §D4), so it gets a real plume,
+ * not a token wisp. Flaming cells lay a thicker, longer, darker one on top.
+ */
+const SMOKE_FLAME_STRENGTH = 0.9;
+const SMOKE_EDGE_STRENGTH = 0.38;
+const SMOKE_EDGE_LEN_SCALE = 0.7;
+
+/**
+ * Lay one plume from cell (x, y) into the accumulators. `strength` is the
+ * optical depth at the source, `sooty` (0..1) how dark the plume is, `lenScale`
+ * stretches the plume (a crown column reaches further).
+ */
+function layPlume(
+  world: WorldState,
+  cache: TerrainCache,
+  x: number,
+  y: number,
+  i: number,
+  strength: number,
+  sooty: number,
+  lenScale: number,
+  lateral: number,
+): void {
+  const { width, height, layers, clock } = world;
+  const u = layers.windU.data[i];
+  const v = layers.windV.data[i];
+  const speed = Math.hypot(u, v);
+  const phase = cache.noise[i] * Math.PI * 2;
+  const t = clock.time;
+  // Calm air: the column rises and spreads in place — a short blob, no direction.
+  const calm = speed < 0.3;
+  const dx = calm ? 0 : u / speed;
+  const dy = calm ? 0 : v / speed;
+  const len = calm ? 2 : Math.min(SMOKE_LEN_MAX, (SMOKE_LEN_BASE + speed * SMOKE_LEN_PER_MPS) * lenScale);
+  const L = Math.max(1, Math.round(len));
+  // Perpendicular unit for the meander / lateral spread.
+  const px = -dy;
+  const py = dx;
+  const smoke = cache.smoke;
+  const soot = cache.soot;
+  for (let j = 1; j <= L; j++) {
+    const f = j / L;
+    // Puffs travel downwind: a wave in j moving with time; the meander bends the
+    // plume axis more the further from the source.
+    const puff = 0.72 + 0.28 * Math.sin(t * 1.6 - j * 0.9 + phase);
+    const meander = Math.sin(t * 0.55 + phase + j * 0.32) * (0.25 + 0.16 * j);
+    const cxF = x + 0.5 + dx * j + px * meander;
+    const cyF = y + 0.5 + dy * j + py * meander;
+    const a = strength * (1 - f) * (1 - f * 0.35) * puff;
+    if (a <= 0.004) continue;
+    const halfW = calm ? 1 + j : Math.min(lateral, 0.6 + 0.16 * j);
+    const span = Math.ceil(halfW);
+    const invW = 1 / (halfW + 0.5);
+    for (let k = -span; k <= span; k++) {
+      // Smooth bump (1 − (k/w)²)² — a Gaussian look without the exp per deposit.
+      const q = 1 - k * k * invW * invW;
+      if (q <= 0) continue;
+      const w = q * q;
+      const cx = Math.floor(cxF + px * k);
+      const cy = Math.floor(cyF + py * k);
+      if (cx < 0 || cy < 0 || cx >= width || cy >= height) continue;
+      const ci = cy * width + cx;
+      const d = a * w;
+      smoke[ci] += d;
+      soot[ci] += d * sooty;
+    }
+  }
+}
 
 /**
  * Compose a full frame into `rgba` (length ≥ width·height·4): per-cell colours,
- * then an additive warm glow around every burning cell — a cheap bloom that
- * makes the fire read at a glance. Clamps manually because callers pass plain
- * `Uint8Array`s (the PNG exporter), which would wrap, not clamp.
+ * then (terrain view) smoke plumes, then an additive warm glow around every
+ * burning cell — a cheap bloom that makes the fire read at a glance. Clamps
+ * manually because callers pass plain `Uint8Array`s (the PNG exporter), which
+ * would wrap, not clamp.
  */
 export function renderRGBA(
   world: WorldState,
   rgba: Uint8Array | Uint8ClampedArray,
   opts: RenderOptions = {},
 ): void {
-  const { width, height } = world;
+  const { width, height, layers } = world;
   const view = opts.view ?? 'terrain';
+  const drawSmoke = (opts.smoke ?? true) && view === 'terrain';
   const n = width * height;
+  const cache = cacheFor(world);
+  const shade = cache.shade;
+  const noise = cache.noise;
+  const fire = layers.fire.data;
+  const fuel = layers.fuel.data;
+  const moist = layers.moisture.data;
+  const elev = layers.elevation.data;
+  const retardantL = layers.retardant.data;
+  const time = world.clock.time;
   const rgb: Rgb = { r: 0, g: 0, b: 0 };
+  let edgeCount = 0;
+
   for (let i = 0; i < n; i++) {
-    cellRGB(world, i, rgb, view);
+    const state = fire[i];
+    if (state === FireState.Unburned && view === 'terrain') {
+      // The hot path (nearly every cell, every frame): inline the terrain ground.
+      terrainRGB(fuel[i], moist[i], elev[i], shade[i], noise[i], time, rgb);
+      const ret = retardantL[i];
+      if (ret > 0) blendRetardant(rgb, ret);
+      clampRgb(rgb);
+    } else if (state === FireState.Burned && view !== 'intensity') {
+      const edge = scarEdge(world, i % width, (i / width) | 0);
+      if (edge !== 0) cache.edge[edgeCount++] = i;
+      cellRGB(world, i, rgb, view, shade[i], noise[i], edge);
+    } else {
+      cellRGB(world, i, rgb, view, shade[i], noise[i]);
+    }
+    // Already clamped to 0..255: truncate to an int so the typed-array store is a
+    // plain byte write (a float store into a Uint8ClampedArray rounds+clamps again).
     const p = i * 4;
-    rgba[p] = rgb.r;
-    rgba[p + 1] = rgb.g;
-    rgba[p + 2] = rgb.b;
+    rgba[p] = rgb.r | 0;
+    rgba[p + 1] = rgb.g | 0;
+    rgba[p + 2] = rgb.b | 0;
     rgba[p + 3] = 255;
+  }
+  cache.edgeCount = edgeCount;
+
+  const crown = layers.crown.data;
+
+  if (drawSmoke) {
+    const smoke = cache.smoke;
+    const soot = cache.soot;
+    smoke.fill(0);
+    soot.fill(0);
+    const intensity = layers.intensity.data;
+    // Flaming cells: a full plume, hotter fronts thicker, crown runs darker and longer.
+    for (let i = 0; i < n; i++) {
+      if (fire[i] !== FireState.Burning) continue;
+      const cr = crown[i];
+      const heat = Math.min(1, intensity[i] / 4000);
+      const strength =
+        SMOKE_FLAME_STRENGTH + 0.4 * heat + (cr === CrownFire.Active ? 0.4 : cr === CrownFire.Passive ? 0.2 : 0);
+      const sooty = 0.3 + 0.35 * heat + (cr === CrownFire.Active ? 0.3 : 0);
+      const lenScale = cr === CrownFire.Active ? 1.6 : cr === CrownFire.Passive ? 1.25 : 1;
+      layPlume(world, cache, i % width, (i / width) | 0, i, strength, sooty, lenScale, 3);
+    }
+    // The smouldering scar edge: paler, shorter plumes — but most of the smoke.
+    // Every other edge cell (by its static hash) lays a plume at ~1.6× strength:
+    // half the cost of one per cell, and the slight clumping reads as smoke does.
+    for (let k = 0; k < edgeCount; k++) {
+      const i = cache.edge[k];
+      if (noise[i] < 0.5) continue;
+      layPlume(world, cache, i % width, (i / width) | 0, i, SMOKE_EDGE_STRENGTH * 1.6, 0.12, SMOKE_EDGE_LEN_SCALE, 2);
+    }
+    // Composite: optical depth → alpha (1 − e^−τ), colour by soot fraction.
+    for (let i = 0; i < n; i++) {
+      const tau = smoke[i];
+      if (tau <= 0.003) continue;
+      let a = 1 - Math.exp(-tau);
+      if (a > SMOKE_MAX_ALPHA) a = SMOKE_MAX_ALPHA;
+      const s = soot[i] / tau;
+      const cr_ = lerp(SMOKE_LIGHT.r, SMOKE_DARK.r, s);
+      const cg_ = lerp(SMOKE_LIGHT.g, SMOKE_DARK.g, s);
+      const cb_ = lerp(SMOKE_LIGHT.b, SMOKE_DARK.b, s);
+      const p = i * 4;
+      rgba[p] = (rgba[p] + (cr_ - rgba[p]) * a) | 0;
+      rgba[p + 1] = (rgba[p + 1] + (cg_ - rgba[p + 1]) * a) | 0;
+      rgba[p + 2] = (rgba[p + 2] + (cb_ - rgba[p + 2]) * a) | 0;
+    }
   }
 
   // Glow post-pass: O(burning · 24), cheap next to the main loop. A crowning
   // cell glows twice as strong — the whole stand is alight, not just the litter.
-  const fire = world.layers.fire.data;
-  const crown = world.layers.crown.data;
+  // Drawn last so the flames punch through any smoke over them.
   for (let i = 0; i < n; i++) {
     if (fire[i] !== FireState.Burning) continue;
     const x = i % width;
     const y = (i / width) | 0;
     const boost = crown[i] === CrownFire.Active ? 2 : crown[i] === CrownFire.Passive ? 1.5 : 1;
-    for (let dy = -2; dy <= 2; dy++) {
-      const ny = y + dy;
-      if (ny < 0 || ny >= height) continue;
-      for (let dx = -2; dx <= 2; dx++) {
-        if (dx === 0 && dy === 0) continue;
-        const nx = x + dx;
-        if (nx < 0 || nx >= width) continue;
-        const ring = Math.max(Math.abs(dx), Math.abs(dy));
-        const p = (ny * width + nx) * 4;
-        const dr = (ring === 1 ? GLOW_NEAR_R : GLOW_FAR_R) * boost;
-        const dg = (ring === 1 ? GLOW_NEAR_G : GLOW_FAR_G) * boost;
-        const r = rgba[p] + dr;
-        const g = rgba[p + 1] + dg;
-        rgba[p] = r > 255 ? 255 : r;
-        rgba[p + 1] = g > 255 ? 255 : g;
-      }
+    for (let k = 0; k < GLOW_DX.length; k++) {
+      const nx = x + GLOW_DX[k];
+      const ny = y + GLOW_DY[k];
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const p = (ny * width + nx) * 4;
+      const w = GLOW_W[k] * boost;
+      const r = (rgba[p] + GLOW_R * w) | 0;
+      const g = (rgba[p + 1] + GLOW_G * w) | 0;
+      rgba[p] = r > 255 ? 255 : r;
+      rgba[p + 1] = g > 255 ? 255 : g;
     }
   }
 }

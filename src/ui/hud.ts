@@ -3,15 +3,26 @@ import type { GroundCrew } from '../sim/groundCrew';
 import type { Engine } from '../sim/engine';
 import type { Aircraft } from '../sim/aircraft';
 import { compassToward, formatDuration, type SimStats } from '../sim/stats';
-import { VIEW_MODES, type ViewMode } from '../render/palette';
+import {
+  VIEW_MODES,
+  canopyRamp,
+  elevationRamp,
+  heatRamp,
+  moistureRamp,
+  type Rgb,
+  type ViewMode,
+} from '../render/palette';
 
 /**
  * Phase-5a HUD (`docs/plans/phase-5-polish.md` decision #1): a browser-only DOM
  * **reader**. It formats `SimStats` + agent getters each frame and owns the run
- * controls (scenario, speed, view, wind overlay). It writes nothing into world
- * state; control changes are reported through callbacks that `main.ts` wires to
- * the frame loop / renderer. Like `SuppressionCommand` it is outside the
- * determinism test.
+ * controls (scenario, speed, view, wind overlay, smoke). It writes nothing into
+ * world state; control changes are reported through callbacks that `main.ts`
+ * wires to the frame loop / renderer. Like `SuppressionCommand` it is outside
+ * the determinism test.
+ *
+ * The **legend** under the view picker is drawn from the palette's own exported
+ * ramp functions, so it can never drift from what the map shows.
  */
 
 export interface HudCallbacks {
@@ -19,12 +30,23 @@ export interface HudCallbacks {
   onTimeScale(scale: number): void;
   onView(mode: ViewMode): void;
   onWindOverlay(on: boolean): void;
+  onSmoke(on: boolean): void;
 }
 
 export interface HudAgents {
   crew: GroundCrew | null;
   engine: Engine | null;
   aircraft: Aircraft | null;
+}
+
+/** Frame-loop timings the HUD shows in the Run panel (all smoothed by the caller). */
+export interface HudPerf {
+  /** Sim cost per step, ms. */
+  simMsPerStep: number;
+  /** Whole frame (sim + render + overlays), ms. */
+  frameMs: number;
+  /** Sim steps taken per animation frame (0 when paused). */
+  stepsPerFrame: number;
 }
 
 /** Selectable sim speeds: sim-seconds per real second. */
@@ -34,6 +56,7 @@ const SPEEDS: ReadonlyArray<{ scale: number; label: string }> = [
   { scale: 60, label: '60×' },
   { scale: 120, label: '120×' },
   { scale: 300, label: '300×' },
+  { scale: 600, label: '600×' },
 ];
 
 /** Sparkline sample spacing (sim seconds) and history length. */
@@ -42,7 +65,7 @@ const SPARK_POINTS = 180; // 6 sim-hours
 
 const STYLE = `
 #hud { position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 10;
-  display: grid; grid-template-columns: minmax(220px, 1.1fr) auto minmax(300px, 1.4fr); gap: 10px;
+  display: grid; grid-template-columns: minmax(220px, 1.1fr) minmax(300px, 380px) minmax(300px, 1.4fr); gap: 10px;
   align-items: stretch; font: 12px/1.4 system-ui, sans-serif; color: #e8e2dc; user-select: none; pointer-events: none; }
 #hud > * { pointer-events: auto; background: #2a2320e6; border: 1px solid #4a3f38; border-radius: 8px;
   box-shadow: 0 4px 18px #0007; padding: 8px 10px; }
@@ -59,7 +82,14 @@ const STYLE = `
 #hud .v.hot { color: #ffb070; }
 #hud .v.crown { color: #ffe9a8; }
 #hud .v.wet { color: #9cc9ff; }
-#hud canvas { display: block; width: 100%; height: 34px; margin-top: 4px; background: #1f1915; border-radius: 3px; }
+#hud canvas.spark { display: block; width: 100%; height: 34px; margin-top: 4px; background: #1f1915; border-radius: 3px; }
+#hud .legend { margin-top: 6px; font-size: 11px; color: #b8ada4; max-width: 340px; }
+#hud .legend canvas { display: block; width: 100%; height: 8px; border-radius: 2px; }
+#hud .legend .ends { display: flex; justify-content: space-between; margin-top: 1px; font-variant-numeric: tabular-nums; }
+#hud .legend .sw { display: flex; flex-wrap: wrap; gap: 3px 10px; max-width: 260px; }
+#hud .legend .sw span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+#hud .legend .sw i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; border: 1px solid #0006; }
+#hud .perf { margin-top: 6px; color: #8d8378; font-size: 11px; font-variant-numeric: tabular-nums; }
 @media (max-width: 900px) { #hud { grid-template-columns: 1fr; } }
 `;
 
@@ -69,9 +99,12 @@ export class Hud {
   private readonly cells = new Map<string, HTMLElement>();
   private readonly spark: HTMLCanvasElement;
   private readonly sparkCtx: CanvasRenderingContext2D;
+  private readonly legend: HTMLElement;
+  private readonly perf: HTMLElement;
   private readonly history: number[] = [];
   private nextSample = 0;
   private windOn = false;
+  private smokeOn = true;
 
   constructor(
     presets: ReadonlyArray<Scenario>,
@@ -132,17 +165,42 @@ export class Hud {
       o.textContent = v.label;
       view.appendChild(o);
     }
-    view.addEventListener('change', () => cb.onView(view.value as ViewMode));
+    view.addEventListener('change', () => {
+      const mode = view.value as ViewMode;
+      cb.onView(mode);
+      this.drawLegend(mode);
+    });
     viewRow.appendChild(view);
     const wind = document.createElement('button');
     wind.textContent = 'Wind arrows';
+    wind.title = 'Overlay the wind field as arrows (length and brightness scale with speed)';
     wind.addEventListener('click', () => {
       this.windOn = !this.windOn;
       wind.classList.toggle('on', this.windOn);
       cb.onWindOverlay(this.windOn);
     });
     viewRow.appendChild(wind);
+    const smoke = document.createElement('button');
+    smoke.textContent = 'Smoke';
+    smoke.title = 'Smoke plumes downwind of flaming and smouldering cells (terrain view; a visual cue, not a dispersion model)';
+    smoke.classList.toggle('on', this.smokeOn);
+    smoke.addEventListener('click', () => {
+      this.smokeOn = !this.smokeOn;
+      smoke.classList.toggle('on', this.smokeOn);
+      cb.onSmoke(this.smokeOn);
+    });
+    viewRow.appendChild(smoke);
     ct.appendChild(viewRow);
+
+    this.legend = document.createElement('div');
+    this.legend.className = 'legend';
+    ct.appendChild(this.legend);
+    this.drawLegend('terrain');
+
+    this.perf = document.createElement('div');
+    this.perf.className = 'perf';
+    this.perf.textContent = '';
+    ct.appendChild(this.perf);
     this.root.appendChild(ct);
 
     // --- stats ------------------------------------------------------------
@@ -176,6 +234,7 @@ export class Hud {
     }
     st.appendChild(grid);
     this.spark = document.createElement('canvas');
+    this.spark.className = 'spark';
     this.spark.width = 360;
     this.spark.height = 34;
     this.spark.title = 'Burned area over the last six simulated hours';
@@ -199,8 +258,8 @@ export class Hud {
     if (notify) this.cb.onTimeScale(scale);
   }
 
-  /** Format the latest stats + unit states. Called once per animation frame. */
-  update(s: SimStats, agents: HudAgents): void {
+  /** Format the latest stats + unit states. Called every few animation frames. */
+  update(s: SimStats, agents: HudAgents, perf?: HudPerf): void {
     const set = (key: string, text: string, cls = ''): void => {
       const el = this.cells.get(key)!;
       el.textContent = text;
@@ -220,6 +279,11 @@ export class Hud {
     set('line', s.lineCutM > 0 ? `${s.lineCutM.toFixed(0)} m cut` : 'none');
     set('units', this.unitsText(agents));
     set('retardant', s.retardantCells > 0 ? `${s.retardantCells} cells active` : 'none');
+
+    if (perf) {
+      this.perf.textContent =
+        `sim ${perf.simMsPerStep.toFixed(2)} ms/step · ${perf.stepsPerFrame.toFixed(1)} steps/frame · frame ${perf.frameMs.toFixed(1)} ms`;
+    }
 
     if (s.time >= this.nextSample) {
       this.history.push(s.burnedHa);
@@ -262,8 +326,97 @@ export class Hud {
     ctx.textAlign = 'right';
     ctx.fillText(`${max.toFixed(1)} ha`, w - 4, 11);
   }
+
+  // --- legend -----------------------------------------------------------------
+
+  /** Rebuild the legend for a view: a colour ramp with end labels, or swatches. */
+  private drawLegend(mode: ViewMode): void {
+    const el = this.legend;
+    el.replaceChildren();
+    switch (mode) {
+      case 'terrain':
+        el.appendChild(swatches([
+          ['#ffd27a', 'flame'],
+          ['#fff6e6', 'crown run'],
+          ['#b06a3a', 'smouldering edge'],
+          ['#2b221d', 'char'],
+          ['#767068', 'ash (crown consumed)'],
+          ['#c8462d', 'retardant'],
+          ['#c2a878', 'cut line'],
+          ['#dcdadd', 'smoke'],
+          ['#6a6a5a', 'contour 50 m'],
+        ]));
+        return;
+      case 'fuel':
+        el.appendChild(swatches([
+          ['rgb(214,196,92)', 'grass'],
+          ['rgb(150,128,60)', 'brush'],
+          ['rgb(48,96,52)', 'timber'],
+          ['rgb(120,118,112)', 'rock'],
+          ['rgb(58,96,150)', 'water'],
+          ['rgb(220,190,130)', 'cut line'],
+        ]));
+        return;
+      case 'moisture':
+        el.appendChild(ramp((t, o) => moistureRamp(t * 0.4, o), ['0 %', '15 % (Mx band)', '40 %+'], 'dead-fuel moisture'));
+        return;
+      case 'elevation':
+        el.appendChild(ramp(elevationRamp, ['0 m', '500 m', '1000 m'], 'elevation (50 m contours)'));
+        return;
+      case 'canopy':
+        el.appendChild(ramp(canopyRamp, ['bare', '', 'dense overstory'], 'canopy cover / bulk density'));
+        return;
+      case 'intensity':
+        el.appendChild(ramp((t, o) => heatRamp(Math.pow(10, 1 + 3 * t), o), ['10', '300', '10 000 kW/m'], 'fireline intensity of the front that took the cell (log)'));
+        return;
+    }
+  }
 }
 
 function fmtKw(v: number): string {
   return v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v.toFixed(0);
+}
+
+/** A horizontal colour ramp drawn from a palette ramp function, with end labels. */
+function ramp(fn: (t: number, out: Rgb) => void, labels: [string, string, string], title: string): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.title = title;
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 1;
+  const ctx = c.getContext('2d')!;
+  const img = ctx.createImageData(256, 1);
+  const rgb: Rgb = { r: 0, g: 0, b: 0 };
+  for (let x = 0; x < 256; x++) {
+    fn(x / 255, rgb);
+    img.data[x * 4] = rgb.r;
+    img.data[x * 4 + 1] = rgb.g;
+    img.data[x * 4 + 2] = rgb.b;
+    img.data[x * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  wrap.appendChild(c);
+  const ends = document.createElement('div');
+  ends.className = 'ends';
+  for (const l of labels) {
+    const s = document.createElement('span');
+    s.textContent = l;
+    ends.appendChild(s);
+  }
+  wrap.appendChild(ends);
+  return wrap;
+}
+
+/** A row of colour swatches with names. */
+function swatches(items: Array<[string, string]>): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'sw';
+  for (const [color, name] of items) {
+    const s = document.createElement('span');
+    const i = document.createElement('i');
+    i.style.background = color;
+    s.append(i, document.createTextNode(name));
+    row.appendChild(s);
+  }
+  return row;
 }

@@ -1,0 +1,113 @@
+import { describe, it, expect } from 'vitest';
+import { FireState } from '../src/core/world';
+import { loadScenario } from '../src/scenario/scenario';
+import { findPreset } from '../src/scenario/presets';
+import { invalidateTerrainShading, renderRGBA, VIEW_MODES } from '../src/render/palette';
+
+/**
+ * The shared frame composition (`renderRGBA`) is what both the canvas and the
+ * PNG exporter draw, so its invariants are pinned headlessly: every view renders
+ * opaque pixels, a frame is a pure function of world state (deterministic, and
+ * the sim's RNG is never touched), the per-world shading cache is invalidated
+ * correctly when elevation is painted, and smoke is a terrain-view-only effect.
+ */
+/**
+ * A preset shrunk to 96² with a centre ignition and no units: the same terrain
+ * generator and pipeline, ~7× cheaper per step, so these tests stay fast under
+ * vitest (whose module transform makes tight loops several times slower than the
+ * browser — see tools/profile.ts).
+ */
+function small(id: string, steps: number) {
+  const p = findPreset(id)!;
+  const { world, sim } = loadScenario({ ...p, width: 96, height: 96, ignitions: 'center', agents: undefined });
+  sim.run(steps, 1);
+  return { world, sim };
+}
+
+function sameBytes(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function frameOf(id: string, steps: number, view = 'terrain' as (typeof VIEW_MODES)[number]['id'], smoke = true) {
+  const { world } = small(id, steps);
+  const rgba = new Uint8ClampedArray(world.width * world.height * 4);
+  renderRGBA(world, rgba, { view, smoke });
+  return { world, rgba };
+}
+
+describe('renderRGBA — shared frame composition', () => {
+  it('renders every view fully opaque with in-range bytes', () => {
+    const { world } = small('grass-valley', 300);
+    const rgba = new Uint8Array(world.width * world.height * 4);
+    for (const v of VIEW_MODES) {
+      rgba.fill(7);
+      renderRGBA(world, rgba, { view: v.id });
+      for (let i = 3; i < rgba.length; i += 4) expect(rgba[i]).toBe(255);
+    }
+  });
+
+  it('is a pure function of world state: same world, same bytes; the RNG is untouched', () => {
+    const a = frameOf('timber-crown-run', 500);
+    const b = frameOf('timber-crown-run', 500);
+    expect(sameBytes(a.rgba, b.rgba)).toBe(true);
+    // Rendering twice more must not perturb the sim: the RNG stream is not consumed.
+    const before = a.world.rng.next();
+    const b2 = frameOf('timber-crown-run', 500);
+    renderRGBA(b2.world, b2.rgba, { view: 'terrain' });
+    renderRGBA(b2.world, b2.rgba, { view: 'intensity' });
+    expect(b2.world.rng.next()).toBe(before);
+  });
+
+  it('shows the fire: burning cells are hot (red-dominant) and the scar differs from the ground', () => {
+    const { world, rgba } = frameOf('grass-valley', 500, 'terrain', false);
+    const fire = world.layers.fire.data;
+    let burning = 0;
+    for (let i = 0; i < fire.length; i++) {
+      if (fire[i] !== FireState.Burning) continue;
+      burning++;
+      expect(rgba[i * 4]).toBeGreaterThan(200); // red channel saturated
+      expect(rgba[i * 4]).toBeGreaterThan(rgba[i * 4 + 2]); // hotter than blue
+    }
+    expect(burning).toBeGreaterThan(0);
+  });
+
+  it('smoke only touches the terrain view, and does touch it downwind of a fire', () => {
+    const { world } = small('grass-valley', 500);
+    const n = world.width * world.height * 4;
+    const on = new Uint8ClampedArray(n);
+    const off = new Uint8ClampedArray(n);
+    renderRGBA(world, on, { view: 'terrain', smoke: true });
+    renderRGBA(world, off, { view: 'terrain', smoke: false });
+    let changed = 0;
+    for (let i = 0; i < n; i++) if (on[i] !== off[i]) changed++;
+    expect(changed).toBeGreaterThan(100);
+    for (const v of VIEW_MODES) {
+      if (v.id === 'terrain') continue;
+      renderRGBA(world, on, { view: v.id, smoke: true });
+      renderRGBA(world, off, { view: v.id, smoke: false });
+      expect(sameBytes(on, off)).toBe(true);
+    }
+  });
+
+  it('caches hillshade per world and rebuilds it after invalidateTerrainShading', () => {
+    const { world } = small('shifting-winds', 10);
+    const n = world.width * world.height;
+    const a = new Uint8ClampedArray(n * 4);
+    const b = new Uint8ClampedArray(n * 4);
+    const c = new Uint8ClampedArray(n * 4);
+    renderRGBA(world, a, { view: 'elevation' });
+    // Paint a ridge far from the fire. Without invalidation the cached shading is
+    // stale and the frame must NOT change; after it, the relief must show.
+    const elev = world.layers.elevation.data;
+    for (let y = 20; y < 40; y++) for (let x = 20; x < 60; x++) elev[y * world.width + x] += 300;
+    renderRGBA(world, b, { view: 'elevation' });
+    invalidateTerrainShading(world);
+    renderRGBA(world, c, { view: 'elevation' });
+    // Hypsometric tint changes even from the stale cache (it reads elevation live)…
+    expect(sameBytes(a, b)).toBe(false);
+    // …but the hillshade at the ridge edge only changes once the cache is rebuilt.
+    expect(sameBytes(b, c)).toBe(false);
+  });
+});

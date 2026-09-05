@@ -157,6 +157,11 @@ export class GroundCrew implements ISuppressionAgent {
     return { x: o.x, y: o.y };
   }
 
+  /** The whole FIFO, head first — a read-only view for the command overlay to draw the planned line. */
+  get pendingOrders(): ReadonlyArray<CrewOrder> {
+    return this.orders;
+  }
+
   // --- per-tick execution ---------------------------------------------------
 
   step(world: WorldState, dt: number): void {
