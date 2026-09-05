@@ -1,6 +1,7 @@
 # Phase 7 — Visuals & performance
 
-> **Status: part 1 LANDED (2026-09-05); part 2 is a written plan.** Part 1 is the
+> **Status: part 1 LANDED (2026-09-05); part 2 items A-C LANDED (2026-09-05),
+> D-H still planned.** Part 1 is the
 > "make it fast and make it read" pass: a 3–4× faster sim step, a cached and
 > tightened renderer, smoke plumes, contour lines, a rounder fire glow, crisp
 > screen-resolution unit markers and cursors, a HUD legend and a perf readout,
@@ -114,61 +115,82 @@ frame.png* (a `zoom` helper is trivial — crop + nearest-neighbour upscale — 
 `CLAUDE.md` invariants first; the renderer never writes world state and never
 calls `world.rng`.
 
-### A. Smoke at constant cost (perf, renderer) — *do first*
-**Problem.** `renderRGBA` lays every plume from scratch every frame; on a large
-fire (≈ 300 flaming + a 7 000-cell scar) that is ≈ 3 ms/frame on top of the base
-pass.
-**Change.** Make the smoke accumulators *persistent* in `TerrainCache` and
-amortise: each frame (1) multiply `smoke`/`soot` by a decay `0.85`, (2) lay
-plumes only for sources whose static hash `noise[i]` falls in this frame's
-quarter (`(frameCounter & 3) / 4 ≤ noise[i] < (frameCounter & 3 + 1) / 4`) at 4×
-strength, (3) composite as today. Keep a `frameCounter` in the cache (increment
-per `renderRGBA` call with smoke on). The headless PNG renders one frame, so it
-must still look right: when `cache.frameCounter === 0` lay **all** sources at 1×
-(cold start), then switch to the quarter schedule.
-**Verify.** `npm run profile -- timber-crown-run 1800`: terrain view within
-0.8 ms of the fuel view. `tests/render.test.ts` still green (the pure-function
-test renders one frame from a fresh world twice — both are cold starts, so they
-stay byte-identical; if you add a second render in that test, expect a
-difference and assert it, do not delete the test). Browser: smoke should look
-the same, slightly smoother.
+### A. Smoke at constant cost (perf, renderer) — ✅ LANDED
+Smoke accumulators are now persistent in `TerrainCache`: each frame decays the
+field by 0.85 and re-lays only the quarter of the sources whose schedule hash
+falls in this frame's slot; a cold start (`frameCounter === 0` — a fresh world,
+or the first frame after smoke was off) lays every source at gain 1, so the
+headless PNG and the browser agree.
 
-### B. Ground colour cache (perf, renderer)
-**Problem.** The unburned-ground colour (fuel × moisture × shade) is recomputed
-for ~60 000 cells every frame though moisture changes by a byte every few
-seconds.
-**Change.** Add `ground: Uint8ClampedArray(n*4)` and `groundDirty: Uint8Array(n)`
-to `TerrainCache` (terrain view only). Each frame: (1) refresh one of 8 row
-bands (`frameCounter % 8`) plus any cell whose moisture byte differs from a
-stored `moistSeen: Uint8Array` copy — compare in the band loop; (2) `rgba.set(
-ground)` as the starting frame (one memcpy); (3) then only overwrite Burning,
-Burned, water (shimmer) and retardant cells with `cellRGB`. `invalidateTerrainShading`
-must also flag every ground cell dirty. Water shimmer and retardant still animate
-because they are drawn in step 3. Editor paint of fuel/moisture: `onPaint` already
-calls `invalidateTerrain` for fuel; add moisture/canopy to that call in `main.ts`.
-**Verify.** profile: terrain view (smoke off — pass `smoke:false` from a
-temporary flag or read the fuel view as a proxy) drops from ≈ 2 ms to < 1 ms.
-`tests/render.test.ts`: keep the pure-function test green (a fresh world is a
-full refresh on the first frame — implement "first frame refreshes everything").
-Add a test: paint a moisture byte, render, the pixel changes within 8 frames.
+**Two corrections to the plan as originally written — do not undo them:**
+- The deposit gain is **0.6×**, not the "4×" this section first proposed. Under
+  decay `d` with `K` slots, depositing `g` every `K` frames settles at a mean of
+  `g / (K·(1−d))`, so `g = K·(1−d) = 0.6` is what preserves the old stateless
+  field's average. 4× would have been ≈ 6.7× too thick — a saturated grey
+  blanket over the whole fire.
+- The schedule uses a **second hash** (`hash01(i ^ 0x5bf03635)`), not
+  `cache.noise`: the scar-edge loop already gates on `noise`, so sharing it
+  would confine every edge source to two of the four slots and make the smoke
+  pulse. (The plan's predicate also mis-parsed: `frameCounter & 3 + 1` is
+  `frameCounter & 4`.)
 
-### C. Explicit front list in the fire model (perf, sim, byte-identical)
-**Problem.** `markCandidates` and the main sweep are three O(n) passes per tick;
-at 512² they dominate.
-**Change.** In `RothermelFireModel.step`, after the dilation, build a compact
-`Int32Array` of candidate indices once (`cand[i] !== 0 && fire[i] !== Burned`)
-and loop over it instead of `for y, for x` — same row-major order (build it in
-index order), so results are **byte-identical**. Then replace the full dilation
-with an incremental one: keep `ignited` from the previous tick, and only dilate
-around cells that *changed* state this tick (`next[i] !== fire[i]` from the last
-step, stored in a small list). Do the compaction first (safe, simple), measure,
-then the incremental dilation as a second commit.
-**Verify.** `tests/determinism.test.ts`, `tests/spread-ros.test.ts`,
-`tests/crownFire.test.ts` all green (they pin byte-identical results). Add to
-`tests/render.test.ts`'s neighbour `tests/scenario.test.ts`: a 3000-step
-`timber-crown-run` fire layer hash before/after must match — capture the hash
-once with the old code and hard-code it. profile at 512²: add a `--size 512`
-override to `tools/profile.ts` (`{...preset, width, height, ignitions:'center'}`).
+The decay pass zeroes cells below 0.004; otherwise the persistent field grows a
+long tail of near-zero values, the composite pass's early-out stops firing and
+compositing costs *more* than it did stateless.
+
+**Result** (`npm run profile -- timber-crown-run 1800`, 256²; the profiler grew a
+`terrain (no smoke)` row so the plume cost can be read directly):
+`terrain 3.689 / no-smoke 1.787` → `terrain 2.558 / no-smoke 1.732`, i.e. the
+plumes went from 1.90 to 0.83 ms/frame. Tests: two new ones in
+`tests/render.test.ts` — a second frame differs from the first, and the total
+smoke deviation after 8 frames stays within 30% of the cold-start frame (that
+one pins the gain).
+
+### B. Ground colour cache (perf, renderer) — ✅ LANDED
+`TerrainCache.ground` (RGBA per cell) holds the unburned terrain colour and is
+rewritten one of 8 row bands per frame; a frame starts from `rgba.set(ground)`
+(one memcpy) and the loop repaints only what animates — fire, the water shimmer,
+retardant — skipping nearly every cell on two byte reads. Water is a cached
+static flag (`TerrainCache.water`) mirroring `terrainRGB`'s own water branch,
+rather than a fuel+elevation test per cell.
+
+No `moistSeen` compare was needed: the band cycle catches every moisture change
+within 8 frames (~0.13 s) on its own. A drag-paint would show that as stripes,
+so the editor's moisture stroke calls the new `invalidateGroundColours` (the
+cheap sibling of `invalidateTerrainShading` — it keeps the hillshade);
+elevation/fuel strokes already invalidate the shading, which now clears the
+ground too. Canopy does not enter the terrain view's ground colour.
+
+**Result** (same run): `terrain 2.558 / no-smoke 1.732` → `terrain 1.666 /
+no-smoke 0.792`. The settled 40-frame terrain frame is byte-identical to the one
+before the change. Test added: a moisture change shows within the 8-frame cycle,
+and at once after an invalidate.
+
+### C. Explicit front list in the fire model — ✅ LANDED (compaction only)
+`collectCandidates` (was `markCandidates`) compacts the survivors of the 3×3
+dilation into an `Int32Array` of indices during its vertical pass, and the sweep
+iterates that list instead of walking the whole map. Byte-identical, and pinned
+by a new golden in `tests/scenario.test.ts`: an FNV-1a hash over fire +
+intensity + crown after a 1200-step `timber-crown-run` on the **mounted**
+pipeline (the determinism test's golden pins the Phase-1 CA reference instead).
+The recorded number was verified to be the one the pre-compaction model
+produces. `tools/profile.ts` gained `--size=N` (square map, centre ignition).
+
+**Result** (`fire:rothermel` ms/step, timber-crown-run 1800 steps):
+256² `0.559 → 0.414` (sim total 0.918 → 0.825); 512² `1.942 → 1.068` (sim total
+3.590 → 2.494).
+
+**The incremental dilation is deliberately NOT done — do not add it.** The three
+whole-map passes it would replace are only ~0.3–0.4 ms of the 1.07 ms the fire
+model costs at 512², and it could not remove them all: `SpottingSystem`,
+`GroundCrew` (backburn) and the editor's ignite tool all write Burning cells
+straight into `layers.fire` without going through the fire model, so an
+incremental scheme still needs one whole-map pass to notice them. That is
+~0.2 ms saved at 512², in exchange for a mechanism that silently drops a spot
+fire whenever the detection is wrong. If more sim speed is wanted,
+`weather:dynamic` (0.272), `moisture:timelag-emc` (0.228) and
+`suppression:retardant-field` (0.370, all at 512²) are plain whole-map sweeps of
+the same size and are the cheaper targets.
 
 ### D. Larger maps from the URL (feature, browser only)
 **Change.** `main.ts`: read `?size=384|512` and load `{...preset, width, height}`
@@ -178,6 +200,14 @@ override to `tools/profile.ts` (`{...preset, width, height, ignitions:'center'}`
 the size in the Scenario panel description line. Keep 256 the default.
 **Verify.** `?size=512&scenario=grass-valley` runs at ≥ 30 fps at 120× after
 items A–C; the perf readout tells you.
+**Caveat measured after A–C** (`npm run profile -- timber-crown-run 1800
+--size=512`): the *terrain* view is ready (3.9 ms/frame without smoke, 5.2 with)
+but the **data views are not** — fuel 10.2, moisture 11.8, canopy 10.6,
+intensity 9.6, elevation 16.7 ms/frame, because item B cached the terrain ground
+only. At 512² those views miss 60 fps on their own, before the sim's 2.5 ms/step
+is counted. Either extend the ground cache to the data views (their ground is a
+pure function of the same layers plus the view id — one cached buffer per view,
+invalidated together) or accept that `?size=512` is a terrain-view feature.
 
 ### E. Animated wind streamlines (visual, overlay canvas only)
 **Change.** In `overlay.ts` add `WindParticles`: 600 particles in cell space,

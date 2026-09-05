@@ -188,7 +188,13 @@ function cacheFor(world: WorldState): TerrainCache {
       let s = hillshade(world, i, x, y) * (1 + (h - 0.5) * 0.1);
       if (isContour(world, i, x, y)) s *= CONTOUR_SHADE;
       c.shade[i] = s;
-      c.water[i] = fuelL[i] === Fuel.Nonburnable && elevL[i] <= WATER_MAX_ELEV ? 1 : 0;
+      // Mirrors `terrainRGB`'s water sub-branch exactly (the two are separate
+      // tests of the same condition): anything with neither a fuel bed nor the
+      // cut-line colour, low enough to be a lake rather than bare rock. Water is
+      // the one ground colour that animates, so it is never served from the cache.
+      const fid = fuelL[i];
+      const hasBed = fid < 8 && FUEL_HAS_BED[fid] === 1;
+      c.water[i] = !hasBed && fid !== Fuel.CutLine && elevL[i] <= WATER_MAX_ELEV ? 1 : 0;
     }
     // Fuel and elevation feed the ground colour too, so it is stale as well.
     c.groundValid = false;
@@ -465,6 +471,8 @@ function refreshGround(world: WorldState, cache: TerrainCache): void {
   const time = clock.time;
   const rgb: Rgb = { r: 0, g: 0, b: 0 };
   for (let i = y0 * width, end = y1 * width; i < end; i++) {
+    // `time` only feeds the water shimmer, and water is repainted live every
+    // frame — nothing time-dependent survives in this buffer.
     terrainRGB(fuel[i], moist[i], elev[i], shade[i], noise[i], time, rgb);
     clampRgb(rgb);
     const p = i * 4;

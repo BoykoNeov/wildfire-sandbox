@@ -111,10 +111,12 @@ upslope only.
   stand instead; import is the upgrade path (handoff §5.3).
 - **Structures, WUI, industrial fuels** — the `IgnitableEntity` seam exists and
   is empty (handoff §5).
-- **Smoke.** The plumes the renderer draws are a *visual cue*: a stateless
-  downwind streak per flaming / smouldering cell, scaled by wind, recorded
-  intensity and crown state. No emission factors, no dispersion, no plume rise;
-  nothing in the sim reads them (`src/render/palette.ts`, Phase-7 plan).
+- **Smoke.** The plumes the renderer draws are a *visual cue*: a downwind streak
+  per flaming / smouldering cell, scaled by wind, recorded intensity and crown
+  state, laid into a decaying screen-space field a quarter of the sources per
+  frame (a rendering optimisation, not a transport model). No emission factors,
+  no dispersion, no plume rise; nothing in the sim reads them
+  (`src/render/palette.ts`, Phase-7 plan).
 - **Validation.** No comparison against observed fires. Do not present a run as
   a prediction.
 
