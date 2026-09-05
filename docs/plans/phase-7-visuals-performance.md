@@ -244,13 +244,25 @@ a 2.9-cell dash that reads as a dot, not a streak. Tail length is
 alpha levels and stroked one path per bucket — 600 separate `stroke` calls a
 frame would show up in the HUD's own perf readout.
 
-**Verified.** `npm run frame` is useless here (the overlay is not in the PNG), so
-a scratch script drove the real `update`/`draw` against a recording context and
-rasterised the segments over a real terrain frame: at 5 sim-minutes of
-`shifting-winds` the streaks run SW→NE, at 20 minutes they have swung to nearly
-N→S — the swing the plan asked to see. Tests: particles advect downwind at the
-documented gain, stay finite and on the grid when blown hard off an edge for 20 s,
-reproduce exactly between two instances, and never draw on `world.rng`.
+**Verified — geometry only.** `npm run frame` is useless here (the overlay is not
+in the PNG), so a scratch script drove the real `update`/`draw` against a
+recording context and rasterised the segments over a real terrain frame: at 5
+sim-minutes of `shifting-winds` the streaks run SW→NE, at 20 minutes they have
+swung to nearly N→S — the swing the plan asked to see. Tests: particles advect
+downwind at the documented gain, stay finite and on the grid when blown hard off
+an edge for 20 s, reproduce exactly between two instances, and never draw on
+`world.rng`.
+
+**The animation itself is NOT verified** — two frozen frames prove direction and
+tail length and cannot show motion, and the browser was unreachable when this
+landed. So the one parameter tuned against a still image (the 1.0 s tail) is the
+one a still image cannot settle: whether the tails read as motion rather than as
+drifting dashes wants a look at `?scenario=shifting-winds` in `npm run dev`. If
+they read wrong, `TRAIL`/`SAMPLE_TICKS` is the knob. **Do not scale the gain by
+`timeScale` to "match" the smoke** — `depositPlume` anchors a fixed-length shape
+at the source and only its internal texture moves (at ~30 Hz at 120×, read as
+shimmer), so there is no legible downwind transport for the streamlines to
+disagree with.
 
 ### F. Spot-fire flash (visual, palette) — ✅ LANDED
 A fresh isolated ignition — an ember landing, a click, a backburn going in —
