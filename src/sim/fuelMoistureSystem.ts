@@ -50,6 +50,21 @@ import { equilibriumMoistureFraction } from './emc';
  * Because the terrain editor can paint the byte layer mid-run, before integrating it
  * **adopts** any cell whose stored byte no longer matches what it last wrote — the
  * painted value wins, exactly as the pre-tick buffer is authoritative for spread.
+ *
+ * **Time-slicing on fine ticks (performance).** With τ ≥ 30 min, a 1-second tick
+ * moves a cell by ~0.05% of its gap — far below the byte the layer can express — yet
+ * the full-map sweep was the second most expensive system in the pipeline. So when
+ * `dt` is shorter than {@link MIN_INTEGRATION_SEC} the map is split into
+ * `K = ceil(MIN_INTEGRATION_SEC / dt)` row bands and each tick integrates ONE band
+ * over `K·dt` seconds. Exponential relaxation toward a constant target composes
+ * exactly (`1 − (1 − α₁)^K = 1 − e^{−K·dt/τ}`), so each cell follows the same
+ * curve it did before, sampled every K ticks instead of every tick; the only
+ * difference is which tick a band's byte updates on, invisible at ≥ 8 s vs a 1-hour
+ * timelag. Adoption of external writes (paint, a knockdown, the retardant re-pin)
+ * happens when the band comes round — within K ticks. Ticks of `dt ≥
+ * MIN_INTEGRATION_SEC` integrate the whole map every tick, exactly as before, so
+ * the headless tests (dt = 30–60 s) are untouched. The band index is a pure
+ * function of the tick count, so a seed still reproduces a run byte-for-byte.
  */
 export class FuelMoistureSystem implements System {
   readonly name = 'moisture:timelag-emc';
@@ -60,19 +75,36 @@ export class FuelMoistureSystem implements System {
   private static readonly WETTING_TIMELAG_SEC = 1800;
   /** Saturation target for fully-rained fine dead fuel, fraction (sandbox constant). */
   private static readonly RAIN_SATURATION_FRACTION = 0.6;
+  /** Shortest interval a cell is integrated over; finer ticks are time-sliced (see header). */
+  private static readonly MIN_INTEGRATION_SEC = 8;
 
   /** High-precision mirror of the byte layer; carries sub-byte per-tick change. */
   private moistureF: Float32Array | null = null;
+  /** Which row band the next fine tick integrates (cycles 0..K−1). */
+  private band = 0;
 
   step(world: WorldState, dt: number): void {
     const moist = world.layers.moisture.data;
     const env = world.env;
+    const { width, height } = world;
 
     if (this.moistureF === null || this.moistureF.length !== moist.length) {
       this.moistureF = new Float32Array(moist.length);
       for (let i = 0; i < moist.length; i++) this.moistureF[i] = byteToFraction(moist[i]);
     }
     const mF = this.moistureF;
+
+    // Time-slicing: K bands of rows, one band per tick, each over K·dt seconds.
+    const K = dt > 0 && dt < FuelMoistureSystem.MIN_INTEGRATION_SEC
+      ? Math.min(height, Math.ceil(FuelMoistureSystem.MIN_INTEGRATION_SEC / dt))
+      : 1;
+    const band = K > 1 ? this.band % K : 0;
+    this.band = K > 1 ? (band + 1) % K : 0;
+    const rowFrom = Math.floor((band * height) / K);
+    const rowTo = Math.floor(((band + 1) * height) / K);
+    const from = rowFrom * width;
+    const to = rowTo * width;
+    const effDt = dt * K;
 
     const raining = env.rainRate > 0;
     const target = raining
@@ -82,9 +114,9 @@ export class FuelMoistureSystem implements System {
       ? FuelMoistureSystem.WETTING_TIMELAG_SEC
       : FuelMoistureSystem.DEAD_1HR_TIMELAG_SEC;
     // Forward-Euler-exact relaxation coefficient; dt-robust if the schedule changes.
-    const alpha = 1 - Math.exp(-dt / tau);
+    const alpha = 1 - Math.exp(-effDt / tau);
 
-    for (let i = 0; i < moist.length; i++) {
+    for (let i = from; i < to; i++) {
       // Adopt external edits (editor paint): if the stored byte no longer matches
       // what we last wrote, the layer is authoritative — reseed the mirror from it.
       if (fractionToByte(mF[i]) !== moist[i]) mF[i] = byteToFraction(moist[i]);

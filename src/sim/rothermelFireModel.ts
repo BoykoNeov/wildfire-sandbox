@@ -155,6 +155,16 @@ export class RothermelFireModel implements IFireModel {
   // same for every cell of a given fuel id. Cache it per id instead of rebuilding
   // a fuel bed (an allocation) for every burning cell every tick.
   private readonly residenceSecById = new Map<number, number>();
+  // Prepared-bed caches. A surface bed is a pure function of (fuel id, dead
+  // moisture byte, scenario live moisture); the FM10 crown proxy of the moisture
+  // byte alone; the WAF of (fuel id, canopy byte). The fire model used to rebuild
+  // all three for every front cell every tick — profiled as most of its cost on a
+  // large front — yet a 256-byte moisture axis gives at most 256 distinct beds per
+  // fuel. Filled lazily, never mutated (BedIntermediates are read-only to callers),
+  // so results are byte-identical to the uncached path.
+  private readonly bedCache = new Map<number, BedIntermediates>();
+  private readonly crownBedCache: Array<BedIntermediates | null | undefined> = new Array(256);
+  private readonly wafCache = new Map<number, number>();
 
   private readonly liveMoisture: number;
   private readonly windReference: WindReference;
@@ -232,26 +242,48 @@ export class RothermelFireModel implements IFireModel {
     return out.ros / 60; // m/min → m/s
   }
 
+  /** The prepared surface bed for a fuel at a dead-moisture byte (cached; see `bedCache`). */
+  private surfaceBedFor(fuelId: number, rf: RothermelFuel, moistureByte: number): BedIntermediates {
+    const key = fuelId * 256 + moistureByte;
+    let bed = this.bedCache.get(key);
+    if (bed === undefined) {
+      bed = prepareFuelBed(fuelBed(rf, byteToFraction(moistureByte), this.liveMoisture));
+      this.bedCache.set(key, bed);
+    }
+    return bed;
+  }
+
   /** The FM10 crown-proxy bed for a cell, or null when the cell cannot crown. */
-  private crownBedFor(canopyByte: number, deadMoisture: number): BedIntermediates | null {
+  private crownBedFor(canopyByte: number, moistureByte: number): BedIntermediates | null {
     if (!this.crownEnabled) return null;
     if (canopyBulkDensity(canopyByte, this.canopy) < MIN_CROWN_CBD) return null;
-    return prepareFuelBed(fuelBed(FM10, deadMoisture, this.liveMoisture));
+    let bed = this.crownBedCache[moistureByte];
+    if (bed === undefined) {
+      bed = prepareFuelBed(fuelBed(FM10, byteToFraction(moistureByte), this.liveMoisture));
+      this.crownBedCache[moistureByte] = bed;
+    }
+    return bed;
   }
 
   /**
    * Factor that turns this cell's world wind into midflame wind: 1 under the
    * `'midflame'` convention, else the Albini–Baughman WAF for the cell's fuel-bed
-   * depth and the canopy over it.
+   * depth and the canopy over it (cached per fuel id × canopy byte).
    */
-  private midflameFactor(rf: RothermelFuel, canopyByte: number): number {
+  private midflameFactor(fuelId: number, rf: RothermelFuel, canopyByte: number): number {
     if (this.windReference === 'midflame') return 1;
-    return windAdjustmentFactor(
-      rf.depth,
-      canopyCoverFraction(canopyByte),
-      this.canopy.standHeightM,
-      this.canopy.crownRatio,
-    );
+    const key = fuelId * 256 + canopyByte;
+    let waf = this.wafCache.get(key);
+    if (waf === undefined) {
+      waf = windAdjustmentFactor(
+        rf.depth,
+        canopyCoverFraction(canopyByte),
+        this.canopy.standHeightM,
+        this.canopy.crownRatio,
+      );
+      this.wafCache.set(key, waf);
+    }
+    return waf;
   }
 
   /**
@@ -350,11 +382,10 @@ export class RothermelFireModel implements IFireModel {
           // and hence no recorded intensity: give it its own head-fire intensity
           // once, so every burning cell carries a defined value for readers.
           if (intensity[i] === 0 && rf) {
-            const m = byteToFraction(moist[i]);
-            const bed = prepareFuelBed(fuelBed(rf, m, this.liveMoisture));
-            const waf = this.midflameFactor(rf, canopyL[i]);
+            const bed = this.surfaceBedFor(fuelL[i], rf, moist[i]);
+            const waf = this.midflameFactor(fuelL[i], rf, canopyL[i]);
             const speed = Math.hypot(windU[i], windV[i]);
-            const fm10 = this.crownBedFor(canopyL[i], m);
+            const fm10 = this.crownBedFor(canopyL[i], moist[i]);
             this.directionBehaviour(
               bed,
               fm10,
@@ -381,16 +412,16 @@ export class RothermelFireModel implements IFireModel {
         // Unburned with an ignited neighbour: accumulate the fastest arriving front.
         if (!fp.burnable || !rf) continue;
 
-        const m = byteToFraction(moist[i]);
-        // The expensive bed assembly happens ONCE per candidate cell; the eight
-        // directions below only evaluate the cheap wind/slope factors against it.
-        const bed = prepareFuelBed(fuelBed(rf, m, this.liveMoisture));
+        // The expensive bed assembly happens at most ONCE per (fuel, moisture byte)
+        // — cached — and the eight directions below only evaluate the cheap
+        // wind/slope factors against it.
+        const bed = this.surfaceBedFor(fuelL[i], rf, moist[i]);
         // Wind sampled at THIS (destination) cell — see world.ts windU/windV — and
         // reduced to midflame here, once, since the factor is a property of the cell.
-        const waf = this.midflameFactor(rf, canopyL[i]);
+        const waf = this.midflameFactor(fuelL[i], rf, canopyL[i]);
         const wu = windU[i];
         const wv = windV[i];
-        const fm10 = this.crownBedFor(canopyL[i], m);
+        const fm10 = this.crownBedFor(canopyL[i], moist[i]);
         const cbd = canopyBulkDensity(canopyL[i], this.canopy);
 
         let maxRate = 0; // max ROS_dir / (dist·cellSize)  [1/s]

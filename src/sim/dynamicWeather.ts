@@ -27,6 +27,15 @@ export interface GustOptions {
   scale?: number;
   /** Lattice cells the gust field drifts per second (gusts move downwind-ish). Default 1/300. */
   drift?: number;
+  /**
+   * Seconds the gust field is held between rewrites. The field drifts at `drift`
+   * lattice cells per second and the mean wind ramps over keyframes hundreds of
+   * seconds apart, so rewriting 2×N floats every 1-second tick was pure cost
+   * (profiled as the third most expensive system). Held for `refreshSeconds`, the
+   * field is still a pure function of `clock.time` (deterministic) and moves
+   * indistinguishably. `0` rewrites every tick. Default 4.
+   */
+  refreshSeconds?: number;
 }
 
 /**
@@ -140,6 +149,8 @@ export class DynamicWeatherProvider implements IWeatherProvider {
   private readonly gust: Required<GustOptions> | null;
   private readonly noiseSpeed: PeriodicNoise | null;
   private readonly noiseDir: PeriodicNoise | null;
+  /** Sim time of the last gust-field write; `-Infinity` forces the first. */
+  private lastGustWrite = -Infinity;
 
   constructor(keyframes: WindKeyframe[], opts: DynamicWeatherOptions = {}) {
     if (keyframes.length === 0) throw new Error('DynamicWeatherProvider needs ≥1 wind keyframe');
@@ -177,6 +188,7 @@ export class DynamicWeatherProvider implements IWeatherProvider {
         dirAmp: opts.gust.dirAmp ?? 0.4,
         scale: opts.gust.scale ?? 3,
         drift: opts.gust.drift ?? 1 / 300,
+        refreshSeconds: opts.gust.refreshSeconds ?? 4,
       };
       // One RNG seeds two independent lattices (speed, direction). 8×8 lattice.
       const rng = new Rng(this.gust.seed);
@@ -246,6 +258,11 @@ export class DynamicWeatherProvider implements IWeatherProvider {
       windV.fill(mv);
       return;
     }
+
+    // Hold the field between refreshes (see `GustOptions.refreshSeconds`). The
+    // first tick always writes, so a reader never sees the all-zero initial layer.
+    if (t - this.lastGustWrite < this.gust.refreshSeconds) return;
+    this.lastGustWrite = t;
 
     // Gusts perturb the mean per cell. Decompose the mean once, then modulate
     // speed multiplicatively and direction additively from the drifting lattice.

@@ -86,6 +86,9 @@ export class RetardantSystem implements System {
     const decay = this.decayPerSec * dt;
 
     for (let i = 0; i < ret.length; i++) {
+      // Untreated in both the layer and the mirror — the overwhelmingly common case,
+      // rejected on two loads before the rounding compare below.
+      if (ret[i] === 0 && rF[i] === 0) continue;
       // Adopt an external write (a fresh aircraft drop raised the byte): the layer is
       // authoritative, reseed the mirror — exactly as FuelMoistureSystem adopts paint.
       if (Math.round(rF[i]) !== ret[i]) rF[i] = ret[i];
