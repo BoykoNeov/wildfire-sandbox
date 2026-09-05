@@ -4,8 +4,9 @@
  * shared `renderRGBA` composition (the render side). The numbers are what the
  * browser frame loop pays, minus `putImageData` and the DOM.
  *
- * Run: npm run profile [-- <preset-id> [steps]]   (default: shifting-winds, 1500)
+ * Run: npm run profile [-- <preset-id> [steps] [--size=N]]  (default: shifting-winds, 1500)
  *      npm run profile -- timber-crown-run 3000
+ *      npm run profile -- timber-crown-run 1800 --size=512   (square map, centre ignition)
  *
  * The npm script bundles this file with esbuild and runs it under plain `node`
  * ON PURPOSE: `vite-node` (what `npm run frame` uses) rewrites every imported
@@ -24,15 +25,21 @@ import { computeStats } from '../src/sim/stats';
 import { loadScenario } from '../src/scenario/scenario';
 import { findPreset, DEFAULT_PRESET_ID, PRESETS } from '../src/scenario/presets';
 
-const presetId = process.argv[2] ?? DEFAULT_PRESET_ID;
+const argv = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+/** `--size 512`: run the preset on a square map of that side, ignition at centre. */
+const sizeArg = process.argv.find((a) => a.startsWith('--size'));
+const SIZE = sizeArg ? Number(sizeArg.split('=')[1] ?? process.argv[process.argv.indexOf(sizeArg) + 1]) : 0;
+
+const presetId = argv[0] ?? DEFAULT_PRESET_ID;
 const preset = findPreset(presetId);
 if (!preset) {
   console.error(`unknown preset "${presetId}" — one of: ${PRESETS.map((p) => p.id).join(', ')}`);
   process.exit(1);
 }
-const STEPS = Number(process.argv[3] ?? 1500);
+const STEPS = Number(argv[1] ?? 1500);
 
-const { world, sim, systems, crew, engine, aircraft, burnableCells } = loadScenario(preset);
+const scenario = SIZE > 0 ? { ...preset, width: SIZE, height: SIZE, ignitions: 'center' as const } : preset;
+const { world, sim, systems, crew, engine, aircraft, burnableCells } = loadScenario(scenario);
 const cx = world.width >> 1;
 const cy = world.height >> 1;
 // The same orders the frame exporter issues, so suppression systems have work.

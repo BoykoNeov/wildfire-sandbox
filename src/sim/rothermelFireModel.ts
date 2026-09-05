@@ -147,10 +147,13 @@ export class RothermelFireModel implements IFireModel {
   readonly name = 'fire:rothermel';
   private next: Uint8Array | null = null;
   private progress: Float32Array | null = null;
-  // Front-candidate mask (see `markCandidates`): scratch buffers reused per tick.
+  // Front-candidate scratch (see `collectCandidates`): reused per tick.
   private ignited: Uint8Array | null = null;
   private dilatedRow: Uint8Array | null = null;
   private candidate: Uint8Array | null = null;
+  /** Indices of this tick's candidates, in index order, and how many. */
+  private candList: Int32Array | null = null;
+  private candCount = 0;
   // Flame residence time depends only on the fuel's dead bed SAV, so it is the
   // same for every cell of a given fuel id. Cache it per id instead of rebuilding
   // a fuel bed (an allocation) for every burning cell every tick.
@@ -299,24 +302,33 @@ export class RothermelFireModel implements IFireModel {
   }
 
   /**
-   * Mark every cell with an ignited 8-neighbour (the only cells the front can
-   * reach this tick) by a separable 3×3 dilation of the ignited mask: one
-   * horizontal pass, one vertical pass, both tight typed-array loops. This is
-   * what keeps the sweep O(front) rather than 8 neighbour reads for every unburned
-   * burnable cell on the map every tick (which profiled at ~10× the cost of the
-   * actual spread arithmetic). Pure function of the pre-tick `fire` buffer, so
-   * determinism and the double-buffer semantics are untouched.
+   * Collect the cells the tick has to look at, into {@link candList} in index
+   * order: every cell with an ignited 8-neighbour (the only ones the front can
+   * reach) that is not already Burned. The neighbourhood test is a separable 3×3
+   * dilation of the ignited mask — one horizontal pass, one vertical pass, both
+   * tight typed-array loops — and the compaction rides along on the vertical
+   * pass, so the sweep itself becomes O(front) instead of a scan of the map with
+   * two rejections per cell. (An 8-neighbour read for every unburned burnable
+   * cell every tick profiled at ~10× the cost of the actual spread arithmetic;
+   * this is the cheaper shape of that same test.)
+   *
+   * Pure function of the pre-tick `fire` buffer, and the sweep is
+   * order-independent (each cell writes only its own `progress`/`next`), so
+   * results are byte-identical to scanning the whole map.
    */
-  private markCandidates(fire: Uint8Array, width: number, height: number): Uint8Array {
+  private collectCandidates(fire: Uint8Array, width: number, height: number): void {
     const n = fire.length;
     if (this.ignited === null || this.ignited.length !== n) {
       this.ignited = new Uint8Array(n);
       this.dilatedRow = new Uint8Array(n);
       this.candidate = new Uint8Array(n);
+      this.candList = new Int32Array(n);
     }
     const ign = this.ignited;
     const row = this.dilatedRow!;
     const cand = this.candidate!;
+    const list = this.candList!;
+    let count = 0;
     // Unburned is 0, so "ever ignited" is simply fire[i] !== 0.
     for (let i = 0; i < n; i++) ign[i] = fire[i] !== 0 ? 1 : 0;
     // Horizontal: row[i] = ign[i-1] | ign[i] | ign[i+1] within the row.
@@ -331,15 +343,31 @@ export class RothermelFireModel implements IFireModel {
       for (let i = r0 + 1; i < r1; i++) row[i] = ign[i - 1] | ign[i] | ign[i + 1];
       row[r1] = ign[r1 - 1] | ign[r1];
     }
-    // Vertical: cand[i] = row[i-w] | row[i] | row[i+w].
+    // Vertical: cand[i] = row[i-w] | row[i] | row[i+w], compacting as it goes.
     if (height === 1) {
-      cand.set(row);
-      return cand;
+      for (let i = 0; i < n; i++) {
+        cand[i] = row[i];
+        if (row[i] !== 0 && fire[i] !== FireState.Burned) list[count++] = i;
+      }
+      this.candCount = count;
+      return;
     }
-    for (let i = 0; i < width; i++) cand[i] = row[i] | row[i + width];
-    for (let i = width; i < n - width; i++) cand[i] = row[i - width] | row[i] | row[i + width];
-    for (let i = n - width; i < n; i++) cand[i] = row[i - width] | row[i];
-    return cand;
+    for (let i = 0; i < width; i++) {
+      const c = row[i] | row[i + width];
+      cand[i] = c;
+      if (c !== 0 && fire[i] !== FireState.Burned) list[count++] = i;
+    }
+    for (let i = width; i < n - width; i++) {
+      const c = row[i - width] | row[i] | row[i + width];
+      cand[i] = c;
+      if (c !== 0 && fire[i] !== FireState.Burned) list[count++] = i;
+    }
+    for (let i = n - width; i < n; i++) {
+      const c = row[i - width] | row[i];
+      cand[i] = c;
+      if (c !== 0 && fire[i] !== FireState.Burned) list[count++] = i;
+    }
+    this.candCount = count;
   }
 
   step(world: WorldState, dt: number): void {
@@ -362,115 +390,114 @@ export class RothermelFireModel implements IFireModel {
     const next = this.next;
     const progress = this.progress!;
     next.set(fire);
-    const candidate = this.markCandidates(fire, width, height);
+    // Only the front (and the cells it can reach) can change this tick; everything
+    // else is rejected once, in the compaction, not in the sweep.
+    this.collectCandidates(fire, width, height);
+    const candList = this.candList!;
+    const candCount = this.candCount;
 
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const i = y * width + x;
-        const state = fire[i];
+    for (let k = 0; k < candCount; k++) {
+      const i = candList[k];
+      const x = i % width;
+      const y = (i / width) | 0;
+      const state = fire[i];
 
-        if (state === FireState.Burned) continue;
-        // Unburned cells with no ignited neighbour cannot advance this tick — the
-        // overwhelmingly common case, rejected before any fuel lookup.
-        if (state === FireState.Unburned && candidate[i] === 0) continue;
+      const fp = this.fuel.getParams(fuelL[i]);
+      const rf = fp.rothermel;
 
-        const fp = this.fuel.getParams(fuelL[i]);
-        const rf = fp.rothermel;
-
-        if (state === FireState.Burning) {
-          // An externally-lit cell (tool / ember / backburn) has no arriving front
-          // and hence no recorded intensity: give it its own head-fire intensity
-          // once, so every burning cell carries a defined value for readers.
-          if (intensity[i] === 0 && rf) {
-            const bed = this.surfaceBedFor(fuelL[i], rf, moist[i]);
-            const waf = this.midflameFactor(fuelL[i], rf, canopyL[i]);
-            const speed = Math.hypot(windU[i], windV[i]);
-            const fm10 = this.crownBedFor(canopyL[i], moist[i]);
-            this.directionBehaviour(
-              bed,
-              fm10,
-              canopyBulkDensity(canopyL[i], this.canopy),
-              speed * waf,
-              this.openWind(rf, speed, waf),
-              0,
-            );
-            intensity[i] = this.crownOut.intensity;
-            crown[i] = this.crownOut.type;
-          }
-          // Burnout is cosmetic flame duration (Albini residence time τ = 384/σ),
-          // independent of spread. No rothermel descriptor ⇒ can't sustain ⇒ out.
-          burnElapsed[i] += dt;
-          let residenceSec = this.residenceSecById.get(fuelL[i]);
-          if (residenceSec === undefined) {
-            residenceSec = rf ? flameResidenceTime(bedSAV(rf)) * 60 : 0;
-            this.residenceSecById.set(fuelL[i], residenceSec);
-          }
-          if (burnElapsed[i] >= residenceSec) next[i] = FireState.Burned;
-          continue;
-        }
-
-        // Unburned with an ignited neighbour: accumulate the fastest arriving front.
-        if (!fp.burnable || !rf) continue;
-
-        // The expensive bed assembly happens at most ONCE per (fuel, moisture byte)
-        // — cached — and the eight directions below only evaluate the cheap
-        // wind/slope factors against it.
-        const bed = this.surfaceBedFor(fuelL[i], rf, moist[i]);
-        // Wind sampled at THIS (destination) cell — see world.ts windU/windV — and
-        // reduced to midflame here, once, since the factor is a property of the cell.
-        const waf = this.midflameFactor(fuelL[i], rf, canopyL[i]);
-        const wu = windU[i];
-        const wv = windV[i];
-        const fm10 = this.crownBedFor(canopyL[i], moist[i]);
-        const cbd = canopyBulkDensity(canopyL[i], this.canopy);
-
-        let maxRate = 0; // max ROS_dir / (dist·cellSize)  [1/s]
-        let bestIntensity = 0; // fire behaviour along that fastest direction
-        let bestCrown = 0;
-        for (let n = 0; n < 8; n++) {
-          const nx = x + NX[n];
-          const ny = y + NY[n];
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-          const ni = ny * width + nx;
-          if (!isIgnited(fire[ni])) continue;
-
-          const dist = NDIST[n];
-          // Spread direction = from the ignited neighbour toward this cell.
-          const dx = -NX[n] / dist;
-          const dy = -NY[n] / dist;
-
-          // Wind (m/s) projected onto the spread direction, downwind only.
-          const windAlong = dx * wu + dy * wv;
-          const along = windAlong > 0 ? windAlong : 0;
-
-          // Slope rise/run from neighbour to this cell; upslope only.
-          const run = dist * cellSize;
-          const rise = elev[i] - elev[ni];
-          const tanSlope = rise > 0 ? rise / run : 0;
-
-          const rosMps = this.directionBehaviour(
+      if (state === FireState.Burning) {
+        // An externally-lit cell (tool / ember / backburn) has no arriving front
+        // and hence no recorded intensity: give it its own head-fire intensity
+        // once, so every burning cell carries a defined value for readers.
+        if (intensity[i] === 0 && rf) {
+          const bed = this.surfaceBedFor(fuelL[i], rf, moist[i]);
+          const waf = this.midflameFactor(fuelL[i], rf, canopyL[i]);
+          const speed = Math.hypot(windU[i], windV[i]);
+          const fm10 = this.crownBedFor(canopyL[i], moist[i]);
+          this.directionBehaviour(
             bed,
             fm10,
-            cbd,
-            along * waf,
-            this.openWind(rf, along, waf),
-            tanSlope,
+            canopyBulkDensity(canopyL[i], this.canopy),
+            speed * waf,
+            this.openWind(rf, speed, waf),
+            0,
           );
-          const rate = rosMps / run;
-          if (rate > maxRate) {
-            maxRate = rate;
-            bestIntensity = this.crownOut.intensity;
-            bestCrown = this.crownOut.type;
-          }
+          intensity[i] = this.crownOut.intensity;
+          crown[i] = this.crownOut.type;
         }
+        // Burnout is cosmetic flame duration (Albini residence time τ = 384/σ),
+        // independent of spread. No rothermel descriptor ⇒ can't sustain ⇒ out.
+        burnElapsed[i] += dt;
+        let residenceSec = this.residenceSecById.get(fuelL[i]);
+        if (residenceSec === undefined) {
+          residenceSec = rf ? flameResidenceTime(bedSAV(rf)) * 60 : 0;
+          this.residenceSecById.set(fuelL[i], residenceSec);
+        }
+        if (burnElapsed[i] >= residenceSec) next[i] = FireState.Burned;
+        continue;
+      }
 
-        progress[i] += maxRate * dt;
-        if (progress[i] >= 1) {
-          next[i] = FireState.Burning;
-          burnElapsed[i] = 0;
-          intensity[i] = bestIntensity;
-          crown[i] = bestCrown;
+      // Unburned with an ignited neighbour: accumulate the fastest arriving front.
+      if (!fp.burnable || !rf) continue;
+
+      // The expensive bed assembly happens at most ONCE per (fuel, moisture byte)
+      // — cached — and the eight directions below only evaluate the cheap
+      // wind/slope factors against it.
+      const bed = this.surfaceBedFor(fuelL[i], rf, moist[i]);
+      // Wind sampled at THIS (destination) cell — see world.ts windU/windV — and
+      // reduced to midflame here, once, since the factor is a property of the cell.
+      const waf = this.midflameFactor(fuelL[i], rf, canopyL[i]);
+      const wu = windU[i];
+      const wv = windV[i];
+      const fm10 = this.crownBedFor(canopyL[i], moist[i]);
+      const cbd = canopyBulkDensity(canopyL[i], this.canopy);
+
+      let maxRate = 0; // max ROS_dir / (dist·cellSize)  [1/s]
+      let bestIntensity = 0; // fire behaviour along that fastest direction
+      let bestCrown = 0;
+      for (let n = 0; n < 8; n++) {
+        const nx = x + NX[n];
+        const ny = y + NY[n];
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const ni = ny * width + nx;
+        if (!isIgnited(fire[ni])) continue;
+
+        const dist = NDIST[n];
+        // Spread direction = from the ignited neighbour toward this cell.
+        const dx = -NX[n] / dist;
+        const dy = -NY[n] / dist;
+
+        // Wind (m/s) projected onto the spread direction, downwind only.
+        const windAlong = dx * wu + dy * wv;
+        const along = windAlong > 0 ? windAlong : 0;
+
+        // Slope rise/run from neighbour to this cell; upslope only.
+        const run = dist * cellSize;
+        const rise = elev[i] - elev[ni];
+        const tanSlope = rise > 0 ? rise / run : 0;
+
+        const rosMps = this.directionBehaviour(
+          bed,
+          fm10,
+          cbd,
+          along * waf,
+          this.openWind(rf, along, waf),
+          tanSlope,
+        );
+        const rate = rosMps / run;
+        if (rate > maxRate) {
+          maxRate = rate;
+          bestIntensity = this.crownOut.intensity;
+          bestCrown = this.crownOut.type;
         }
+      }
+
+      progress[i] += maxRate * dt;
+      if (progress[i] >= 1) {
+        next[i] = FireState.Burning;
+        burnElapsed[i] = 0;
+        intensity[i] = bestIntensity;
+        crown[i] = bestCrown;
       }
     }
 

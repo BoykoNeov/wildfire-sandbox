@@ -163,6 +163,31 @@ describe('presets', () => {
     expect(crowning).toBeGreaterThan(20);
   });
 
+  it('the timber crown run reproduces its recorded golden hash', { timeout: 30000 }, () => {
+    // A whole-run golden for the MOUNTED pipeline (the determinism test's golden
+    // pins the Phase-1 CA reference instead). Any change that claims to be
+    // byte-identical — a cache, a compaction, a reordered sweep — has to keep
+    // this number. If a change deliberately alters the physics, recompute it and
+    // say so in the commit.
+    const l = loadScenario(shrink(findPreset('timber-crown-run')!));
+    l.sim.run(1200, 1);
+    const { fire, intensity, crown } = l.world.layers;
+    let h = 0x811c9dc5; // FNV-1a over fire, then the intensity bytes, then crown
+    const mix = (v: number): void => {
+      h ^= v & 0xff;
+      h = Math.imul(h, 0x01000193);
+    };
+    for (let i = 0; i < fire.data.length; i++) mix(fire.data[i]);
+    for (let i = 0; i < intensity.data.length; i++) {
+      const kw = Math.round(intensity.data[i]);
+      mix(kw);
+      mix(kw >>> 8);
+      mix(kw >>> 16);
+    }
+    for (let i = 0; i < crown.data.length; i++) mix(crown.data[i]);
+    expect(h >>> 0).toBe(1457051880);
+  });
+
   it('the rain front pushes dead-fuel moisture up after the rain arrives', { timeout: 30000 }, () => {
     const l = loadScenario(shrink(findPreset('rain-front')!, 64));
     const mean = (): number => {
