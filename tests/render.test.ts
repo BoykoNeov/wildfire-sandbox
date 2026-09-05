@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { FireState } from '../src/core/world';
 import { loadScenario } from '../src/scenario/scenario';
 import { findPreset } from '../src/scenario/presets';
-import { invalidateTerrainShading, renderRGBA, VIEW_MODES } from '../src/render/palette';
+import { Fuel } from '../src/sim/basicFuelModel';
+import { invalidateGroundColours, invalidateTerrainShading, renderRGBA, VIEW_MODES } from '../src/render/palette';
 
 /**
  * The shared frame composition (`renderRGBA`) is what both the canvas and the
@@ -122,6 +123,45 @@ describe('renderRGBA — shared frame composition', () => {
     expect(cold).toBeGreaterThan(0);
     expect(settled / cold).toBeGreaterThan(0.7);
     expect(settled / cold).toBeLessThan(1.43);
+  });
+
+  it('picks up a moisture change within the ground refresh cycle, or at once when invalidated', () => {
+    // The terrain view's unburned ground is cached and rewritten one row band per
+    // frame, so a moisture change shows within GROUND_BANDS frames — and
+    // immediately when the editor invalidates after a paint stroke.
+    const { world } = small('grass-valley', 10);
+    const n = world.width * world.height;
+    const rgba = new Uint8ClampedArray(n * 4);
+    const fire = world.layers.fire.data;
+    const fuel = world.layers.fuel.data;
+    const moist = world.layers.moisture.data;
+    let idx = -1;
+    for (let i = 0; i < n; i++) {
+      if (fire[i] === FireState.Unburned && fuel[i] === Fuel.Grass) {
+        idx = i;
+        break;
+      }
+    }
+    expect(idx).toBeGreaterThanOrEqual(0);
+    const pixel = () => [rgba[idx * 4], rgba[idx * 4 + 1], rgba[idx * 4 + 2]].join(',');
+    renderRGBA(world, rgba, { view: 'terrain', smoke: false });
+    const before = pixel();
+    const orig = moist[idx];
+    moist[idx] = orig > 127 ? 0 : 255;
+    let framesToShow = -1;
+    for (let f = 1; f <= 8; f++) {
+      renderRGBA(world, rgba, { view: 'terrain', smoke: false });
+      if (pixel() !== before) {
+        framesToShow = f;
+        break;
+      }
+    }
+    expect(framesToShow).toBeGreaterThan(0); // it did show, within the 8-band cycle
+    // Back to the original value: invalidating makes the very next frame show it.
+    moist[idx] = orig;
+    invalidateGroundColours(world);
+    renderRGBA(world, rgba, { view: 'terrain', smoke: false });
+    expect(pixel()).toBe(before);
   });
 
   it('caches hillshade per world and rebuilds it after invalidateTerrainShading', () => {

@@ -1,6 +1,6 @@
 import type { WorldState } from '../core/world';
 import type { IRenderer } from '../models/IRenderer';
-import { invalidateTerrainShading, renderRGBA, type ViewMode } from './palette';
+import { invalidateGroundColours, invalidateTerrainShading, renderRGBA, type ViewMode } from './palette';
 
 /**
  * 2D top-down canvas renderer (Handoff §2.2). Reads world state, writes pixels;
@@ -30,6 +30,11 @@ export class CanvasRenderer implements IRenderer {
   /** Call after the editor paints elevation or fuel: hillshade/contours are cached. */
   invalidateTerrain(): void {
     invalidateTerrainShading(this.world);
+  }
+
+  /** Call after the editor paints moisture: the unburned ground colour is cached. */
+  invalidateGround(): void {
+    invalidateGroundColours(this.world);
   }
 
   render(world: WorldState): void {

@@ -30,10 +30,12 @@ const overlayCtx = overlay.getContext('2d')!;
 // Terrain editor (Phase-2 step 5): brush-paint over the data layers. Writes layer
 // bytes only — never a system — so the invariants hold. It owns a pause flag so
 // you can author terrain without the front advancing. Painting elevation or fuel
-// invalidates the renderer's cached hillshade / contours.
+// invalidates the renderer's cached hillshade / contours; painting moisture
+// invalidates the cached ground colours (which otherwise refresh a band a frame).
 const editor = new TerrainEditor(canvas, world, {
   onPaint: (tool) => {
     if (tool === 'elevation' || tool === 'fuel') renderer.invalidateTerrain();
+    else if (tool === 'moisture') renderer.invalidateGround();
   },
 });
 

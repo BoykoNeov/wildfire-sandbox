@@ -55,9 +55,13 @@ export interface Rgb {
  * **Per-world render cache.** Hillshade, contour lines and the per-cell texture
  * hash are static until someone paints elevation, so they are computed once into
  * a {@link TerrainCache} and reused every frame (this halved the frame cost at
- * 256²). The cache is keyed by world in a `WeakMap`, so `renderRGBA`'s signature
- * is unchanged and the headless exporter gets it for free; the editor calls
- * {@link invalidateTerrainShading} after a stroke that changes elevation or fuel.
+ * 256²). The terrain view's *unburned ground colour* is cached there too and
+ * rewritten one row band per frame, so a frame starts from a memcpy and only
+ * repaints what animates (fire, water, retardant). The cache is keyed by world in
+ * a `WeakMap`, so `renderRGBA`'s signature is unchanged and the headless exporter
+ * gets it for free; the editor calls {@link invalidateTerrainShading} after a
+ * stroke that changes elevation or fuel, {@link invalidateGroundColours} after
+ * one that changes moisture.
  * The cache also owns the smoke accumulators (which persist between frames — see
  * the smoke section) and the scar-edge list, so the frame loop allocates nothing.
  */
@@ -121,6 +125,18 @@ interface TerrainCache {
   shade: Float32Array;
   /** `hash01(i)` per cell. */
   noise: Float32Array;
+  /**
+   * The terrain view's unburned ground colour (fuel × moisture × shade, before
+   * retardant), RGBA per cell. Refreshed one row band per frame — see
+   * {@link refreshGround}.
+   */
+  ground: Uint8ClampedArray;
+  /** 1 where a cell is water (nonburnable below {@link WATER_MAX_ELEV}) — it shimmers, so it is never cached. */
+  water: Uint8Array;
+  /** False until {@link ground} has been filled once (a fresh or repainted world). */
+  groundValid: boolean;
+  /** Which of {@link GROUND_BANDS} row bands `refreshGround` rewrites next. */
+  groundBand: number;
   /** Smoke optical depth accumulator, per cell. Persists between frames (amortised). */
   smoke: Float32Array;
   /** Soot-weighted smoke accumulator, per cell — colours the plume grey→dark. */
@@ -151,12 +167,18 @@ function cacheFor(world: WorldState): TerrainCache {
       edge: new Int32Array(n),
       edgeCount: 0,
       frameCounter: 0,
+      ground: new Uint8ClampedArray(n * 4),
+      water: new Uint8Array(n),
+      groundValid: false,
+      groundBand: 0,
       dirty: true,
     };
     caches.set(world, c);
   }
   if (c.dirty) {
     const { width } = world;
+    const fuelL = world.layers.fuel.data;
+    const elevL = world.layers.elevation.data;
     for (let i = 0; i < n; i++) {
       const x = i % width;
       const y = (i / width) | 0;
@@ -166,7 +188,10 @@ function cacheFor(world: WorldState): TerrainCache {
       let s = hillshade(world, i, x, y) * (1 + (h - 0.5) * 0.1);
       if (isContour(world, i, x, y)) s *= CONTOUR_SHADE;
       c.shade[i] = s;
+      c.water[i] = fuelL[i] === Fuel.Nonburnable && elevL[i] <= WATER_MAX_ELEV ? 1 : 0;
     }
+    // Fuel and elevation feed the ground colour too, so it is stale as well.
+    c.groundValid = false;
     c.dirty = false;
   }
   return c;
@@ -180,6 +205,17 @@ function cacheFor(world: WorldState): TerrainCache {
 export function invalidateTerrainShading(world: WorldState): void {
   const c = caches.get(world);
   if (c) c.dirty = true;
+}
+
+/**
+ * Mark a world's cached ground colours stale — call after painting `moisture`,
+ * which the band refresh would otherwise pick up over the next few frames (a
+ * drag-paint would appear in stripes). Cheaper than
+ * {@link invalidateTerrainShading}: the hillshade is kept.
+ */
+export function invalidateGroundColours(world: WorldState): void {
+  const c = caches.get(world);
+  if (c) c.groundValid = false;
 }
 
 function lerp(a: number, b: number, t: number): number {
@@ -398,6 +434,47 @@ function terrainRGB(
       out.b = lerp(152, 108, depth) * f;
     }
   }
+}
+
+/**
+ * How many row bands {@link refreshGround} spreads a full ground rewrite over.
+ * Moisture moves by a byte every few seconds, so a cell's colour may lag by up
+ * to this many frames (~0.13 s at 60 fps) — invisible, and the editor's paint
+ * calls {@link invalidateGroundColours} for an immediate rewrite.
+ */
+const GROUND_BANDS = 8;
+
+/**
+ * Refresh the cached unburned-ground colours (the terrain view's hot path:
+ * fuel × moisture × shade for nearly every cell, every frame). One row band per
+ * frame, or the whole map when the cache is cold — after that the frame loop
+ * starts from a memcpy of {@link TerrainCache.ground} and only repaints the
+ * cells that actually animate (fire, water shimmer, retardant).
+ */
+function refreshGround(world: WorldState, cache: TerrainCache): void {
+  const { width, height, layers, clock } = world;
+  const full = !cache.groundValid;
+  const y0 = full ? 0 : Math.floor((cache.groundBand * height) / GROUND_BANDS);
+  const y1 = full ? height : Math.floor(((cache.groundBand + 1) * height) / GROUND_BANDS);
+  const ground = cache.ground;
+  const shade = cache.shade;
+  const noise = cache.noise;
+  const fuel = layers.fuel.data;
+  const moist = layers.moisture.data;
+  const elev = layers.elevation.data;
+  const time = clock.time;
+  const rgb: Rgb = { r: 0, g: 0, b: 0 };
+  for (let i = y0 * width, end = y1 * width; i < end; i++) {
+    terrainRGB(fuel[i], moist[i], elev[i], shade[i], noise[i], time, rgb);
+    clampRgb(rgb);
+    const p = i * 4;
+    ground[p] = rgb.r | 0;
+    ground[p + 1] = rgb.g | 0;
+    ground[p + 2] = rgb.b | 0;
+    ground[p + 3] = 255;
+  }
+  cache.groundValid = true;
+  cache.groundBand = (cache.groundBand + 1) % GROUND_BANDS;
 }
 
 function blendRetardant(out: Rgb, retardant: number): void {
@@ -769,28 +846,51 @@ export function renderRGBA(
   const rgb: Rgb = { r: 0, g: 0, b: 0 };
   let edgeCount = 0;
 
-  for (let i = 0; i < n; i++) {
-    const state = fire[i];
-    if (state === FireState.Unburned && view === 'terrain') {
-      // The hot path (nearly every cell, every frame): inline the terrain ground.
-      terrainRGB(fuel[i], moist[i], elev[i], shade[i], noise[i], time, rgb);
-      const ret = retardantL[i];
-      if (ret > 0) blendRetardant(rgb, ret);
-      clampRgb(rgb);
-    } else if (state === FireState.Burned && view !== 'intensity') {
-      const edge = scarEdge(world, i % width, (i / width) | 0);
-      if (edge !== 0) cache.edge[edgeCount++] = i;
-      cellRGB(world, i, rgb, view, shade[i], noise[i], edge);
-    } else {
-      cellRGB(world, i, rgb, view, shade[i], noise[i]);
+  // Already-clamped colours are truncated with `| 0` before every store, so the
+  // typed-array write is a plain byte write (a float store into a
+  // Uint8ClampedArray rounds and clamps a second time).
+  if (view === 'terrain') {
+    // Start from the cached ground (one memcpy) and repaint only what animates:
+    // fire, the water shimmer and retardant. Nearly every cell is skipped outright.
+    refreshGround(world, cache);
+    rgba.set(cache.ground);
+    const water = cache.water;
+    for (let i = 0; i < n; i++) {
+      const state = fire[i];
+      if (state === FireState.Unburned) {
+        const ret = retardantL[i];
+        if (ret === 0 && water[i] === 0) continue; // the cached ground is already right
+        terrainRGB(fuel[i], moist[i], elev[i], shade[i], noise[i], time, rgb);
+        if (ret > 0) blendRetardant(rgb, ret);
+        clampRgb(rgb);
+      } else if (state === FireState.Burned) {
+        const edge = scarEdge(world, i % width, (i / width) | 0);
+        if (edge !== 0) cache.edge[edgeCount++] = i;
+        cellRGB(world, i, rgb, view, shade[i], noise[i], edge);
+      } else {
+        cellRGB(world, i, rgb, view, shade[i], noise[i]);
+      }
+      const p = i * 4;
+      rgba[p] = rgb.r | 0;
+      rgba[p + 1] = rgb.g | 0;
+      rgba[p + 2] = rgb.b | 0;
+      rgba[p + 3] = 255;
     }
-    // Already clamped to 0..255: truncate to an int so the typed-array store is a
-    // plain byte write (a float store into a Uint8ClampedArray rounds+clamps again).
-    const p = i * 4;
-    rgba[p] = rgb.r | 0;
-    rgba[p + 1] = rgb.g | 0;
-    rgba[p + 2] = rgb.b | 0;
-    rgba[p + 3] = 255;
+  } else {
+    for (let i = 0; i < n; i++) {
+      if (fire[i] === FireState.Burned && view !== 'intensity') {
+        const edge = scarEdge(world, i % width, (i / width) | 0);
+        if (edge !== 0) cache.edge[edgeCount++] = i;
+        cellRGB(world, i, rgb, view, shade[i], noise[i], edge);
+      } else {
+        cellRGB(world, i, rgb, view, shade[i], noise[i]);
+      }
+      const p = i * 4;
+      rgba[p] = rgb.r | 0;
+      rgba[p + 1] = rgb.g | 0;
+      rgba[p + 2] = rgb.b | 0;
+      rgba[p + 3] = 255;
+    }
   }
   cache.edgeCount = edgeCount;
 
