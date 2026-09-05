@@ -32,6 +32,14 @@ export interface RenderOptions {
   view?: ViewMode;
   /** Draw smoke plumes (terrain view only). Default true. */
   smoke?: boolean;
+  /**
+   * Flash a fresh, isolated new ignition white-hot — an ember landing, a click,
+   * a backburn going in — so spotting is visible as it happens. Default true.
+   * Off is the "only the resulting fire, never the moment it started" reading,
+   * which is what an observer on the ground actually gets. Drawn on **every**
+   * view (fire always reads the same, unlike smoke).
+   */
+  spotFlash?: boolean;
 }
 
 export interface Rgb {
@@ -668,6 +676,48 @@ function scarEdge(world: WorldState, x: number, y: number): 0 | 1 | 2 {
   return edge;
 }
 
+/**
+ * Seconds a fresh ignition keeps its flash. Longer than a grass flame lives
+ * (Albini residence τ = 384/σ ≈ 6.6 s), so in fast fuel the cell burns out
+ * before the flash fades — see the fade in the glow pass.
+ */
+const SPOT_FLASH_SECONDS = 12;
+
+/**
+ * Is this Burning cell a *new* fire rather than the front arriving? True when
+ * nothing in its 8-neighbourhood ignited before it did: no Burned neighbour,
+ * and no Burning neighbour with a larger `burnElapsed`. Ties flash (a backburn
+ * lit along a line on one tick reads as the whole line catching, which is what
+ * happens).
+ *
+ * **The "no Burned neighbour" half is not sufficient on its own** — the phase-7
+ * plan originally specified only that, and it is wrong for fast fuels: a grass
+ * flame lasts ~6.6 s, so the cell behind the leading edge is still *Burning*,
+ * not yet Burned, and the entire front would flash. Do not simplify this back.
+ *
+ * Cheap: only reached for Burning cells inside the flash window, and it returns
+ * on the first disqualifying neighbour (1–2 probes inside a front).
+ */
+function isSpotFlash(world: WorldState, x: number, y: number, t: number): boolean {
+  const { width, height } = world;
+  const fire = world.layers.fire.data;
+  const age = world.layers.burnElapsed.data;
+  for (let dy = -1; dy <= 1; dy++) {
+    const ny = y + dy;
+    if (ny < 0 || ny >= height) continue;
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      const nx = x + dx;
+      if (nx < 0 || nx >= width) continue;
+      const ni = ny * width + nx;
+      const s = fire[ni];
+      if (s === FireState.Burned) return false;
+      if (s === FireState.Burning && age[ni] > t) return false;
+    }
+  }
+  return true;
+}
+
 // ───────────────────────── fire glow ─────────────────────────
 
 /**
@@ -689,6 +739,34 @@ for (let dy = -2; dy <= 2; dy++) {
 }
 const GLOW_R = 36;
 const GLOW_G = 14;
+
+/**
+ * The spot flash: a wider (radius 3), softer halo than the glow, laid **only**
+ * around a fresh isolated ignition, plus an additive white core on the cell
+ * itself. Additive rather than an overwrite so it is order-independent (two
+ * flashes may overlap), composes with the crown boost, and needs its own blue
+ * term — the glow adds none, so without it "white-hot" would read as yellow.
+ */
+const FLASH_DX: number[] = [];
+const FLASH_DY: number[] = [];
+const FLASH_W: number[] = [];
+for (let dy = -3; dy <= 3; dy++) {
+  for (let dx = -3; dx <= 3; dx++) {
+    if (dx === 0 && dy === 0) continue;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    FLASH_DX.push(dx);
+    FLASH_DY.push(dy);
+    FLASH_W.push(Math.exp(-(d - 1) * 0.7));
+  }
+}
+/** Additive halo weights [R, G, B] at full freshness. */
+const FLASH_HALO_R = 66;
+const FLASH_HALO_G = 52;
+const FLASH_HALO_B = 26;
+/** Additive core on the ignition cell itself — enough blue to take a flame to white. */
+const FLASH_CORE_R = 55;
+const FLASH_CORE_G = 78;
+const FLASH_CORE_B = 150;
 
 // ───────────────────────── smoke ─────────────────────────
 
@@ -841,6 +919,7 @@ export function renderRGBA(
   const { width, height, layers } = world;
   const view = opts.view ?? 'terrain';
   const drawSmoke = (opts.smoke ?? true) && view === 'terrain';
+  const drawFlash = opts.spotFlash ?? true;
   const n = width * height;
   const cache = cacheFor(world);
   const shade = cache.shade;
@@ -985,6 +1064,13 @@ export function renderRGBA(
   // Glow post-pass: O(burning · 24), cheap next to the main loop. A crowning
   // cell glows twice as strong — the whole stand is alight, not just the litter.
   // Drawn last so the flames punch through any smoke over them.
+  //
+  // The spot flash rides along in the same sweep (no extra whole-map pass): a
+  // fresh isolated ignition — an ember that just landed, a click, a backburn —
+  // gets an additive white core and a wider halo, fading linearly over
+  // SPOT_FLASH_SECONDS, so you see *where* spotting started a new fire instead
+  // of only meeting the fire it grows into.
+  const burnAge = layers.burnElapsed.data;
   for (let i = 0; i < n; i++) {
     if (fire[i] !== FireState.Burning) continue;
     const x = i % width;
@@ -1000,6 +1086,30 @@ export function renderRGBA(
       const g = (rgba[p + 1] + GLOW_G * w) | 0;
       rgba[p] = r > 255 ? 255 : r;
       rgba[p + 1] = g > 255 ? 255 : g;
+    }
+    if (!drawFlash) continue;
+    const t = burnAge[i];
+    if (t >= SPOT_FLASH_SECONDS || !isSpotFlash(world, x, y, t)) continue;
+    const f = 1 - t / SPOT_FLASH_SECONDS;
+    const p0 = i * 4;
+    const cr = (rgba[p0] + FLASH_CORE_R * f) | 0;
+    const cg = (rgba[p0 + 1] + FLASH_CORE_G * f) | 0;
+    const cb = (rgba[p0 + 2] + FLASH_CORE_B * f) | 0;
+    rgba[p0] = cr > 255 ? 255 : cr;
+    rgba[p0 + 1] = cg > 255 ? 255 : cg;
+    rgba[p0 + 2] = cb > 255 ? 255 : cb;
+    for (let k = 0; k < FLASH_DX.length; k++) {
+      const nx = x + FLASH_DX[k];
+      const ny = y + FLASH_DY[k];
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const p = (ny * width + nx) * 4;
+      const w = FLASH_W[k] * f;
+      const r = (rgba[p] + FLASH_HALO_R * w) | 0;
+      const g = (rgba[p + 1] + FLASH_HALO_G * w) | 0;
+      const b = (rgba[p + 2] + FLASH_HALO_B * w) | 0;
+      rgba[p] = r > 255 ? 255 : r;
+      rgba[p + 1] = g > 255 ? 255 : g;
+      rgba[p + 2] = b > 255 ? 255 : b;
     }
   }
 }

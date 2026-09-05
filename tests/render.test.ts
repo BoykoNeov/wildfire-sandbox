@@ -164,6 +164,68 @@ describe('renderRGBA — shared frame composition', () => {
     expect(pixel()).toBe(before);
   });
 
+  it('flashes a fresh isolated ignition, and leaves an ordinary front byte-identical', () => {
+    // Hand-built so the assertion is exact: a preset run would hand us genuine
+    // spot fires from SpottingSystem and break the identity half.
+    const { world } = small('grass-valley', 0);
+    const n = world.width * world.height;
+    const w = world.width;
+    const fire = world.layers.fire.data;
+    const age = world.layers.burnElapsed.data;
+    fire.fill(FireState.Unburned);
+    age.fill(0);
+    // A normal front: burned interior, a leading row of flames whose neighbours
+    // behind them ignited EARLIER but are still Burning (grass flames last ~6.6 s,
+    // so they have not turned Burned yet — this is the case the plan's original
+    // "no Burned neighbour" rule got wrong).
+    for (let y = 20; y < 30; y++) {
+      for (let x = 20; x < 40; x++) {
+        const i = y * w + x;
+        if (y < 27) {
+          fire[i] = FireState.Burned;
+        } else {
+          fire[i] = FireState.Burning;
+          age[i] = (30 - y) * 2; // older behind, youngest at the leading row
+        }
+      }
+    }
+    const on = new Uint8ClampedArray(n * 4);
+    const off = new Uint8ClampedArray(n * 4);
+    renderRGBA(world, on, { view: 'terrain', smoke: false, spotFlash: true });
+    renderRGBA(world, off, { view: 'terrain', smoke: false, spotFlash: false });
+    expect(sameBytes(on, off)).toBe(true); // no leakage into an ordinary front
+
+    // Now an ember lands far away: a single Burning cell, nothing older near it.
+    const spot = 70 * w + 70;
+    fire[spot] = FireState.Burning;
+    age[spot] = 0;
+    renderRGBA(world, on, { view: 'terrain', smoke: false, spotFlash: true });
+    renderRGBA(world, off, { view: 'terrain', smoke: false, spotFlash: false });
+    expect(sameBytes(on, off)).toBe(false);
+    expect(on[spot * 4 + 2]).toBeGreaterThan(off[spot * 4 + 2]); // the white core: blue is what the glow never adds
+    // …and it fades out: at the end of the window the frames agree again.
+    age[spot] = 12;
+    renderRGBA(world, on, { view: 'terrain', smoke: false, spotFlash: true });
+    renderRGBA(world, off, { view: 'terrain', smoke: false, spotFlash: false });
+    expect(sameBytes(on, off)).toBe(true);
+  });
+
+  it('draws the spot flash on every view, not just terrain (unlike smoke)', () => {
+    const { world } = small('grass-valley', 0);
+    const n = world.width * world.height;
+    world.layers.fire.data.fill(FireState.Unburned);
+    world.layers.burnElapsed.data.fill(0);
+    const spot = 50 * world.width + 50;
+    world.layers.fire.data[spot] = FireState.Burning;
+    const on = new Uint8ClampedArray(n * 4);
+    const off = new Uint8ClampedArray(n * 4);
+    for (const v of VIEW_MODES) {
+      renderRGBA(world, on, { view: v.id, smoke: false, spotFlash: true });
+      renderRGBA(world, off, { view: v.id, smoke: false, spotFlash: false });
+      expect(sameBytes(on, off), v.id).toBe(false);
+    }
+  });
+
   it('caches hillshade per world and rebuilds it after invalidateTerrainShading', () => {
     const { world } = small('shifting-winds', 10);
     const n = world.width * world.height;

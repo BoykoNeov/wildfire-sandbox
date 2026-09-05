@@ -16,6 +16,8 @@ export class CanvasRenderer implements IRenderer {
   view: ViewMode = 'terrain';
   /** Smoke plumes on the terrain view. */
   smoke = true;
+  /** Flash fresh isolated ignitions (embers landing, clicks, a backburn going in). */
+  spotFlash = true;
 
   constructor(canvas: HTMLCanvasElement, world: WorldState) {
     canvas.width = world.width;
@@ -38,7 +40,7 @@ export class CanvasRenderer implements IRenderer {
   }
 
   render(world: WorldState): void {
-    renderRGBA(world, this.image.data, { view: this.view, smoke: this.smoke });
+    renderRGBA(world, this.image.data, { view: this.view, smoke: this.smoke, spotFlash: this.spotFlash });
     this.ctx.putImageData(this.image, 0, 0);
   }
 }

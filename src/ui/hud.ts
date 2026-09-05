@@ -31,6 +31,7 @@ export interface HudCallbacks {
   onView(mode: ViewMode): void;
   onWindOverlay(on: boolean): void;
   onSmoke(on: boolean): void;
+  onSpotFlash(on: boolean): void;
 }
 
 export interface HudAgents {
@@ -105,6 +106,7 @@ export class Hud {
   private nextSample = 0;
   private windOn = false;
   private smokeOn = true;
+  private spotFlashOn = true;
 
   constructor(
     presets: ReadonlyArray<Scenario>,
@@ -190,6 +192,18 @@ export class Hud {
       cb.onSmoke(this.smokeOn);
     });
     viewRow.appendChild(smoke);
+    const spots = document.createElement('button');
+    spots.textContent = 'Spot flash';
+    spots.title =
+      'Flash a fresh isolated ignition white-hot for ~12 simulated seconds — where an ember landed, a click, a backburn going in. ' +
+      'Turn it off to see only the fire that grows out of it, the way an observer on the ground would. Brief at high speed.';
+    spots.classList.toggle('on', this.spotFlashOn);
+    spots.addEventListener('click', () => {
+      this.spotFlashOn = !this.spotFlashOn;
+      spots.classList.toggle('on', this.spotFlashOn);
+      cb.onSpotFlash(this.spotFlashOn);
+    });
+    viewRow.appendChild(spots);
     ct.appendChild(viewRow);
 
     this.legend = document.createElement('div');

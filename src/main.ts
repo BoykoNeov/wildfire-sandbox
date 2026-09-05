@@ -75,6 +75,9 @@ const hud = new Hud(PRESETS, preset, timeScale, {
   onSmoke: (on) => {
     renderer.smoke = on;
   },
+  onSpotFlash: (on) => {
+    renderer.spotFlash = on;
+  },
 });
 
 function sizeOverlay(): void {

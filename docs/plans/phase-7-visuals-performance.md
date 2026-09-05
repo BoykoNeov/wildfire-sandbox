@@ -1,7 +1,7 @@
 # Phase 7 — Visuals & performance
 
-> **Status: part 1 LANDED (2026-09-05); part 2 items A-C LANDED (2026-09-05),
-> D-H still planned.** Part 1 is the
+> **Status: part 1 LANDED (2026-09-05); part 2 items A-C and F LANDED
+> (2026-09-05/06), D, E, G, H still planned.** Part 1 is the
 > "make it fast and make it read" pass: a 3–4× faster sim step, a cached and
 > tightened renderer, smoke plumes, contour lines, a rounder fire glow, crisp
 > screen-resolution unit markers and cursors, a HUD legend and a perf readout,
@@ -219,15 +219,50 @@ polylines. Toggle replaces (or accompanies) the arrows via the same HUD button
 **Verify.** Visually; wind shift in `shifting-winds` should visibly swing the
 streamlines over the 30 sim-minutes.
 
-### F. Spot-fire flash (visual, palette)
-**Change.** In `cellRGB`'s Burning branch: if `burnElapsed < 12 s` **and** none
-of the 8 neighbours is Burned (i.e. this is an isolated new ignition — an ember
-or a click, not the front arriving), draw a bright white-yellow core and add a
-one-ring extra glow in the glow pass (reuse `scarEdge`-style neighbour scan;
-cost only for burning cells). Makes spotting legible: you see where an ember
-landed.
-**Verify.** `npm run frame -- timber-crown-run 2400` shows distinct bright specks
-downwind of the run; `tests/render.test.ts` "burning cells are hot" stays green.
+### F. Spot-fire flash (visual, palette) — ✅ LANDED
+A fresh isolated ignition — an ember landing, a click, a backburn going in —
+gets an additive white core plus a wider (radius-3) halo, fading linearly over
+`SPOT_FLASH_SECONDS = 12`, so you see *where* spotting started a new fire
+instead of only meeting the fire it grows into. Toggleable: `RenderOptions.spotFlash`
+(default true), a **Spot flash** HUD button beside Smoke, and a 5th positional
+`spots` argument on `npm run frame` (`... terrain 0`). Off is the honest
+ground-observer reading — only the resulting fire, never the moment it started —
+which is why it is a toggle and not a constant.
+
+**Three corrections to the plan as originally written — do not undo them:**
+- **The neighbour rule needs both halves.** "No 8-neighbour is Burned" alone is
+  *wrong for fast fuels*: an Albini flame residence time is τ = 384/σ ≈ 6.6 s in
+  grass, so the cell behind the leading edge is still `Burning`, not yet
+  `Burned`, and **the whole front would flash**. `isSpotFlash` also rejects any
+  `Burning` neighbour with a larger `burnElapsed` — "nothing next to me ignited
+  before I did". Ties flash (a backburn lit along a line on one tick reads as
+  the whole line catching, which is what happens).
+- **Not gated to the terrain view.** Smoke is terrain-only; fire is drawn
+  identically on every view by design (see the `palette.ts` header), so the
+  flash is gated on the option alone.
+- **Additive, not an overwrite,** and with its own blue term. Two flashes can
+  overlap, and it has to compose with the crown boost, so a `set` on the cell
+  would be order-dependent; and the glow adds no blue (`GLOW_R/GLOW_G` only), so
+  without `FLASH_CORE_B` "white-hot" would read as plain yellow.
+
+It lives inside the existing glow sweep — no new whole-map pass. In grass the
+age gate prunes nothing (every flame is under 12 s), so the neighbour scan runs
+over the flaming front: O(front · 8) with a first-disqualifying-neighbour early
+exit, the same order as the `scarEdge` pass already run each frame.
+
+**Duration is speed-dependent and cannot be fixed here.** 12 sim-seconds is
+~6 rendered frames at the default 120× and ~1 frame at 600×; the window cannot
+be widened, because residence time ends the `Burning` state first and
+`burnElapsed` freezes at burnout. Extending into `Burned` would need a new
+timestamp layer — not worth it. The HUD tooltip says so.
+
+**Verified.** `npm run frame -- timber-crown-run 1685 terrain 1` vs `... 0`
+differ in 734 px / 16 flash cores; a 14-frame headless strip from step 852 shows
+the core fading monotonically (blue delta 138 → 12 over the window) while an
+older established spot nearby stays dim orange in both. Tests: an ordinary front
+renders **byte-identical** with the flash on and off (that is what pins "no
+leakage into the normal front"), one isolated fresh ignition differs and agrees
+again at t = 12 s, and the flash shows on every view.
 
 ### G. Renderer seam: WebGL2 `IRenderer` (perf, large, optional)
 Only if A–C are not enough at 512²+. Upload the layers as textures (`fire`,

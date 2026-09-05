@@ -118,10 +118,11 @@ length) ✅ → P7 visuals & performance part 1 ✅ (3–4× faster step, render
 smoke, contours, crisp overlays, legend, profiler) → P7 part 2 items A–C ✅
 (amortised smoke, cached ground colour, compacted front list: the terrain frame
 is 3.69 → 1.67 ms at 256², the fire model 1.94 → 1.07 ms/step at 512²; the
-incremental dilation is deliberately NOT done — see item C). Next: P7 part 2
-items D–H in `docs/plans/phase-7-visuals-performance.md` (bigger maps from the
-URL — read item D's caveat: the data views still cost 10–17 ms/frame at 512² —
-wind streamlines, spot-fire flash, HUD/profiler odds and ends), the honest gaps
+incremental dilation is deliberately NOT done — see item C) + item F ✅
+(spot-fire flash on fresh isolated ignitions, HUD-toggleable). Next: P7 part 2
+items D, E, G, H in `docs/plans/phase-7-visuals-performance.md` (bigger maps from
+the URL — read item D's caveat: the data views still cost 10–17 ms/frame at 512²
+— wind streamlines, HUD/profiler odds and ends), the honest gaps
 in `docs/science.md` §9 (Huygens wavefront, per-class dead moisture,
 live-moisture curve, intensity-driven ember loft), then the additive future
 phases (WUI structures → industrial). Each phase must be runnable and verifiable
