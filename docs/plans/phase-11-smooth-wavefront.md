@@ -1,8 +1,12 @@
 # Phase 11 — the smooth wavefront (Huygens marker points)
 
-> **Status: PLANNED.** Nothing implemented. This is the last of the "honest gaps"
-> in [`docs/science.md`](../science.md) §9 that is a *phase* rather than a knob,
-> and the first one that cannot be reached by widening a stencil.
+> **Status: Stages 0 and 1 SHIPPED.** `spreadEngine: 'huygens'` runs a marker
+> front end to end — Richards' equations, substepping, density control, barriers,
+> seeding, rasterisation — and §7's table is measured below. `'raster'` remains
+> the default, so nothing in [`docs/science.md`](../science.md) has moved.
+> **Stage 2** (perimeter merging) and **Stage 3** (crossover removal, then the
+> call on the default) are still to do; §D8's burnable enclaves stay out of scope
+> for the phase.
 
 **Goal:** stop carrying the fire as a raster of finitely many rays. Carry it as a
 **polygon of marker points** that each advance by Richards' (1990) elliptical
@@ -179,10 +183,23 @@ doubled — by the perimeter's **winding order**, which FARSITE fixes by taking
 explicitly as an inward/outward flag (`GetInout(CurrentFire) == 2`, in the same
 block quoted for the 1.4 divisor in D7).
 
-So handedness and winding must be pinned **together**, and this document does not
-assert a sign it has not run. Phase 11 fixes the convention as: **vertices stored
-counter-clockwise in screen coordinates (x right, y down)**, with the sign of `q`
-chosen so a small ring under zero wind *expands*. Two Stage-1 gates verify it, and
+So handedness and winding must be pinned **together**. Phase 11 fixes the
+convention as: **vertices stored counter-clockwise in screen coordinates (x
+right, y down)**, tangent taken as `previous − next`.
+
+**That is now settled by derivation rather than by trying both signs**, which is
+the better answer and was found before any code was written. Rewritten in basis
+form the velocity is `V = −(h²q/D)·ĥ + (f²p/D)·ĝ + c·ĥ`, where `ĥ = (u, v)` is the
+head direction and `ĝ = (v, −u)`. It depends on the frame only through how `ĝ` and
+the winding relate, so the formulas apply **verbatim** in screen coordinates under
+the winding above — and the four cases fall out analytically: the head marker
+moves at `a + c = R` along `ĥ` (the Rothermel head rate exactly), the back marker
+at `c − a = −B` (the backing rate), the widest marker at `b` across the head plus
+a drift `c` along it, and at `E = 0` every marker moves outward at `R`. That
+drift term is the one easy to drop, and it is what makes the envelope an ellipse
+about its *focus* rather than about its centre.
+
+The two gates below still run, as confirmation rather than as discovery, and
 neither is optional:
 
 - **Expansion test.** A seed ring under zero wind must grow in area, not shrink.
@@ -407,29 +424,71 @@ landing.
 
 Each stage must be runnable and verifiable before the next (CLAUDE.md).
 
-**Stage 0 — extract the cell behaviour (D2).**
-*Gate:* whole suite green, `timber-crown-run` golden byte-identical, `npm run
-profile` within noise of the current 1.53 ms/step.
+**Stage 0 — extract the cell behaviour (D2).** ✅
+`src/sim/surfaceBehaviour.ts`, and `RothermelFireModelOptions` split into a
+shared `SurfaceBehaviourOptions` half and a raster-only half.
+*Gate met:* suite unchanged (407 pass), `timber-crown-run` golden still
+2552629230, `fire:rothermel` 0.594 → 0.574 ms/step on `shifting-winds` at 256².
 
-**Stage 1 — one perimeter, no barriers, no merging.**
-Richards advance + substepping + density control + rasterisation. Flat, uniform
-fuel, single ignition.
-*Gate:* the **expansion test** and the **oblique-wind axis test** from §2c — both
-of them, because the LB series cannot see a mirrored ellipse; then windless
-anisotropy and the wind LB series (§7) measured on a harness in
-`M:\claud_projects\temp\phase11\`; and `tests/spread-ros.test.ts` — the planar
-front still runs at the analytic Rothermel rate.
+**The plan's own §D2 sentence was wrong, and what shipped supersedes it.** It
+asks for a pure function returning "head rate, head direction, eccentricity,
+intensity and crown type" from `(world, cellIndex)`. Those are two different
+scopes: the first three are per-*cell*, but intensity and crown type are
+per-*direction* — the Byram intensity reads the direction's own rate off the
+ellipse, and Van Wagner's I₀ test reads that intensity. A record-returning pure
+function would have to evaluate the crown eagerly (a behaviour change: the FM10
+proxy is deliberately deferred to the first direction that clears I₀, which most
+cells never do) or allocate per direction (the hot loop allocates nothing per
+direction). What shipped is a **two-phase stateful object** — `prepareCellEllipse`
+then `ellipticalDirection(cosTheta)` — which is the shape the raster model
+already had internally, and which the marker front reaches through the same two
+phases: a marker's displacement gives `cosTheta = (d·headU)/|d|`.
 
-**Stage 2 — barriers, external ignitions, merging (D4, D5, D6).**
-*Gate:* `tests/suppression.test.ts` passes unmodified on the Huygens path (the
-line holds, the gap leaks); `tests/spotting.test.ts` passes; `timber-crown-run`
-runs a simulated hour without producing a degenerate perimeter. Plus the two
-**intensity-attribution** checks §5c calls for, which are the only guard on the
-one failure in this phase that does not error:
-- after a merge, every cell inside the merged region carries a **defined**
-  intensity (nothing swallowed silently at zero);
-- on an elongated fire, cells ignited by a **flank** segment record lower
-  intensity than cells ignited at the head.
+**Stage 1 — one perimeter, no merging.** ✅
+`src/sim/richards.ts` (the growth equations, pure), `src/sim/perimeter.ts`
+(density control, area, point-in-ring, segment crossing, and the no-skip segment
+traversal that paints the raster), `src/sim/huygensFireModel.ts`, and
+`spreadEngine` on `Scenario`. **Barriers and external-ignition seeding came in
+with it** rather than waiting for Stage 2 — seeding because a marker front has no
+other way to *start* (every ignition arrives as a byte in the `fire` layer,
+written by `igniteNearestBurnable`, the ignition tool, an ember or a backburn),
+and barriers because the guard is two lines once seeding exists.
+
+*Gate met:* all seven gates in `tests/huygens.test.ts` — the expansion test, the
+signed oblique-axis test, the analytic rate, the shape pair, the barrier pair
+(the line holds, a one-cell gap leaks) and both of §5c's intensity checks; plus
+`tests/richards.test.ts` (10) and `tests/perimeter.test.ts` (11). §7's table is
+measured below.
+
+**One thing the plan did not anticipate: how to measure length-to-breadth.** The
+ignition point is the ellipse's rear *focus*, not its centre, so the half-width
+on the ray through the ignition point is the semi-latus rectum `b²/a` — and
+`(head+back)/(2·that)` comes out as **LB²**, not LB. Measured that way both
+engines read +96 % at 3 m/s, which is 1.91² = 3.65 and not a model error at all.
+Breadth has to be the full extent *across* the head axis over the whole burn.
+
+**And one gate the plan listed that does not transfer.** `tests/spread-ros.test.ts`
+seeds a planar front by filling the whole left column, which is a raster idea: a
+marker front has no perimeter there. The equivalent on this path is sharper and
+is what `tests/huygens.test.ts` asserts instead — a point ignition's radius is
+R₀·t at *every* angle, which is the rate check and the isotropy check at once.
+
+**Stage 2 — merging (D6).** *(barriers (D4) and external ignitions (D5) landed in Stage 1)*
+*Gate:* `tests/suppression.test.ts` passes unmodified on the Huygens path;
+`tests/spotting.test.ts` passes; `timber-crown-run` runs a simulated hour without
+producing a degenerate perimeter. Plus the merge half of §5c's intensity
+attribution — after a merge, every cell inside the merged region carries a
+**defined** intensity, nothing swallowed silently at zero. (§5c's *other* check,
+that a flank segment records lower intensity than the head, and the barrier pair,
+are both already pinned in `tests/huygens.test.ts` by Stage 1.)
+
+**And a cost hazard that surfaces here, not in Stage 1.** Rings are never
+retired, and burning does not change a cell's fuel id — so a marker inside the
+burn scar still passes the burnable test and keeps moving, and a ring wholly
+enclosed by burnt ground expands forever. Output stays correct (painting
+short-circuits on an already-ignited cell); the cost does not. Retiring a ring is
+part of merging, which is why they belong to the same stage. This is the reason
+`timber-crown-run` is not measured in §7a.
 
 **Stage 3 — crossover/loop removal (D7), and the decision on the default.**
 *Gate:* a front driven around a nonburnable island produces a valid simple
@@ -460,6 +519,59 @@ at one hour: **+5 to +15 %** on the current 16 474 cells. The season pair's
 **8.26×** area ratio was measured against the raster and will move; its direction
 is deliberately **not** predicted — both members gain area, and the cured member's
 spotting is intensity-driven, so the ratio can go either way.
+
+### 7a. As measured (Stage 1)
+
+Harness: `M:\claud_projects\temp\phase11\shape.ts` — FM1 at 6 % dead moisture,
+flat, uniform, one lit cell, both engines on the *same* field, 300 ticks of
+`dt = 1 s`, cell size chosen so the head travels 30 cells (windless) or 45 cells
+(windy). Every "raster" figure below is re-measured on this harness rather than
+quoted from `docs/science.md`, so the two columns are comparable to each other;
+they are **not** directly comparable to §1's figures, which were taken on a
+different geometry and, for length-to-breadth, a different definition.
+
+**Every prediction held, and the anisotropy one held by an order of magnitude —
+but only once the two things being measured were told apart.**
+
+| Quantity | Predicted | Raster, measured | Huygens, **the front** | Huygens, painted raster |
+|---|---|---|---|---|
+| Windless max/min anisotropy | ≤ 1.02 | 1.080 | **1.0022** ✅ | 1.050 |
+| Radius at 11.25°, windless | ≥ 0.99 | 0.959 | **0.9983** ✅ | 1.025 |
+| LB error, 1 m/s | ±5 % | −3 % | **−0.4 %** ✅ | +2 % |
+| LB error, 2 m/s | ±5 % | −0 % | **−1.0 %** ✅ | −2 % |
+| LB error, 3 m/s | ±5 % | −2 % | **−1.8 %** ✅ | +0 % |
+| LB error, 4 m/s | < 10 % | −1 % | **−3.0 %** ✅ | −5 % |
+| LB error, 5 m/s | < 10 % | +12 % | **−4.4 %** ✅ | −8 % |
+| Head rate / analytic | — | 0.939× | — | 1.006–1.028× |
+
+**The two Huygens columns are the finding.** The last column reads the burned
+cells out of the `fire` layer, exactly as the raster column does, and at a 30-cell
+radius on 30 m cells one cell is 3 % — which a max/min over 32 rays picks up
+twice. The middle column measures the model's own polygon, which is what Phase 11
+actually changes. The front is essentially exact (1.0022 against a perfect
+circle's 1.000); what is left in the last column is **the grid, not the front**,
+and no propagation scheme can remove it. This distinction is not in §7 as written,
+and the phase would have been reported as failing its own headline prediction
+without it.
+
+The residual over-run on the head rate (1.006–1.028×) is the seed ring: a new
+perimeter is born as a ring of radius half a cell, which is 1.7 % of a 30-cell
+run and 1.1 % of a 45-cell one. It is not a rate error.
+
+**Burned area, same run, same field:** windless **1.135×** the raster's, at 3 m/s
+**1.434×**. So the "a smooth front burns more" prediction holds, and the windless
+figure lands inside the predicted +5 to +15 % band; the windy figure is well
+outside it. That the wind-driven case gains most is the expected direction — the
+raster's error was flank width, and flank width is what an elongated fire has
+most of — but the magnitude was under-predicted. `timber-crown-run` itself is not
+measured here: it needs perimeter merging (§D6), because it carries multiple
+concurrent perimeters from its first ember, and that is Stage 2.
+
+**The two direction gates, which the table above cannot see:** a windless ring
+expands (burned area strictly increasing over six 20-tick windows), and under a
+wind 30° off-axis the head lands at **31.0°** — against the raster's 27.9°, and
+against the −30° a mirrored ellipse would have produced with every other number
+in this document unchanged.
 
 ---
 

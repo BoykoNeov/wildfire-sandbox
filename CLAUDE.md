@@ -237,10 +237,39 @@ burned area and 2.47× the mean fireline intensity at one hour, against the old
 pair's 2.25× / 1.60×. Other presets and the default terrain mapping (FM1/FM6/FM9)
 are unmoved on purpose — every measured number in `docs/science.md` was taken
 against them.
-Next: the next gap in `docs/science.md` §9 that is a *phase* — a smooth
-wavefront (Huygens marker points; the raster route is spent, so this needs a plan
-doc of its own) — then the additive future phases (WUI structures → industrial).
-Each phase must be runnable and verifiable before the next.
+**P11 the smooth wavefront, Stages 0–1** ✅
+(`docs/plans/phase-11-smooth-wavefront.md`): the fire can now be carried as a
+**polygon of marker points** that each move by Richards' (1990) elliptical growth
+equations — FARSITE's mechanism, transcribed from the FARSITE 4 C++ because
+BehavePlus is a *point* model library with no propagation in it at all — and
+painted into the same `fire`/`intensity`/`crown` layers. Select it with
+`spreadEngine: 'huygens'` on a scenario; **`'raster'` is still the default** and
+is byte-identical, so no measured number in `docs/science.md` has moved.
+
+Three things worth carrying forward. **The spread law did not change**: FARSITE's
+`lb_ratio` is character-for-character our `lengthToBreadthRatio` and its Alexander
+head/backing ratio is our `backingRate` in disguise, so Phase 11 changes only how
+the front is *carried* — established by identity, not by hoping two sources agree.
+**Stage 0 came first and was byte-identical**: everything the raster model knew
+about a *cell* (bed caches, the WAF, the ellipse, the crown transition) moved to
+`src/sim/surfaceBehaviour.ts` before a line of Huygens code was written, so the
+two models cannot drift; the golden hash and 0.594 → 0.574 ms/step are the gate on
+that (0.561 after Stage 1 added a marker-path method to the same shared object —
+`npm run profile`, `shifting-winds` at 256², idle machine). And **the measurement had to separate the front from the grid**: the front
+itself comes out at 1.0022 max/min windless (against the raster's 1.080 on the
+same field) and within 4.4 % on length-to-breadth out to 5 m/s, but read back out
+of the `fire` layer the same run measures 1.050 — because at a 30-cell radius on
+30 m cells, one cell is 3 %. The phase would have looked like it missed its own
+headline prediction without that distinction.
+
+Still to do: **merging** two perimeters that have grown together (Stage 2 — and
+until it lands the marker front is not usable on any preset with spotting, which
+throws multiple concurrent perimeters from the first ember), **crossover/loop
+removal** (Stage 3), then the argued call on whether the default flips. Burnable
+enclaves are declared out of scope for the phase.
+
+Next: Phase 11 Stages 2 and 3 — then the additive future phases (WUI structures →
+industrial). Each phase must be runnable and verifiable before the next.
 
 One scope note carried by `?size=`: the terrain generator samples in normalized
 coordinates, so a bigger map is the same landscape spread over more ground —

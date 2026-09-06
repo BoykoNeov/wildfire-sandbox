@@ -39,6 +39,7 @@ import {
   windSlopeResultant,
   type WindSlopeResultant,
 } from './fireEllipse';
+import { ellipseDimensions, richardsVelocity, type EllipseDimensions, type MarkerVelocity } from './richards';
 
 /**
  * Everything a fire model needs to know about **one cell** — the fuel bed, the
@@ -333,6 +334,11 @@ export class SurfaceBehaviour {
     slopeUy: 0,
   };
   readonly grad: CellGradient = { tan: 0, ux: 0, uy: 0 };
+  // Marker path only: the FM10 crown proxy's own ellipse and the velocity read
+  // off it, so the crown rate reaches `evaluateCrownFire` in the same
+  // (normal-form) terms as the surface rate beside it. See {@link markerBehaviour}.
+  private readonly crownDim: EllipseDimensions = { a: 0, b: 0, c: 0 };
+  private readonly crownVel: MarkerVelocity = { vx: 0, vy: 0 };
 
   constructor(
     private readonly fuel: IFuelModel,
@@ -520,6 +526,55 @@ export class SurfaceBehaviour {
     inp.fm10Ros = ellipticalRate(c.fm10Head, c.crownEcc, cosTheta) * 0.3048;
     evaluateCrownFire(inp, out);
     return out.ros / 60; // m/min → m/s
+  }
+
+  /**
+   * Phase two of two, **for a marker front**: fire behaviour at a marker whose
+   * own outward speed is already known, `surfFtMin` [ft/min], with
+   * `tangentX/tangentY` the local perimeter tangent that produced it. Returns the
+   * rate in m/s and leaves intensity [kW/m] + crown type in {@link crownOut},
+   * exactly like {@link ellipticalDirection}.
+   *
+   * **Why the rate comes in rather than being read off the ellipse.** A marker
+   * sits *on the fire edge*, and the rate there is the one perpendicular to the
+   * perimeter — Richards' velocity, which is Behave's Catchpole-et-al-1982 form.
+   * {@link ellipticalDirection} instead reads the ellipse about its *focus*,
+   * which is the rate of a front expanding from an ignition point. Both are in
+   * `fireEllipse.ts` and its header already says which belongs where; a marker
+   * front is the first caller that needs the other one.
+   *
+   * **Both sides of the crown test are normal-form, deliberately.** Van Wagner's
+   * I₀ is compared against a surface intensity built from `surfFtMin`, and the
+   * FM10 crown rate that follows is read off the crown ellipse with the *same*
+   * tangent rather than off its focus — otherwise the two rates handed to
+   * `evaluateCrownFire` would be taken at different points of their respective
+   * ellipses, and the fire would crown in the wrong places with nothing erroring
+   * (`docs/plans/phase-11-smooth-wavefront.md` §5c).
+   *
+   * The crown proxy stays deferred: most markers never clear I₀, and
+   * {@link ensureCrownHead} still runs at most once per cell.
+   */
+  markerBehaviour(surfFtMin: number, tangentX: number, tangentY: number): number {
+    const c = this.cell;
+    const out = this.crownOut;
+    out.type = CrownFire.None;
+    // Byram, with tau hoisted to the cell - same association as `firelineIntensity`.
+    out.intensity = btuPerFtSecToKwPerM((c.reaction * (surfFtMin * c.tau)) / 60);
+    if (!c.hasCrown || surfFtMin <= 0) return ftPerMinToMetersPerSec(surfFtMin);
+
+    const inp = this.crownIn;
+    inp.surfaceIntensity = out.intensity;
+    inp.surfaceRos = surfFtMin * 0.3048; // ft/min -> m/min
+    inp.cbd = c.cbd;
+    // Cheap reject before the crown ellipse is built at all.
+    inp.fm10Ros = 0;
+    if (evaluateCrownFire(inp, out).type === CrownFire.None) return ftPerMinToMetersPerSec(surfFtMin);
+    this.ensureCrownHead();
+    const dim = ellipseDimensions(c.fm10Head, c.crownEcc, this.crownDim);
+    const v = richardsVelocity(dim, c.headUx, c.headUy, tangentX, tangentY, this.crownVel);
+    inp.fm10Ros = Math.hypot(v.vx, v.vy) * 0.3048; // ft/min -> m/min
+    evaluateCrownFire(inp, out);
+    return out.ros / 60; // m/min -> m/s
   }
 
   /**

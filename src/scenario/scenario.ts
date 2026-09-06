@@ -11,6 +11,7 @@ import {
 } from '../sim/dynamicWeather';
 import { FuelMoistureSystem } from '../sim/fuelMoistureSystem';
 import { RothermelFireModel, type RothermelFireModelOptions } from '../sim/rothermelFireModel';
+import { HuygensFireModel, type HuygensFireModelOptions } from '../sim/huygensFireModel';
 import { DEFAULT_CANOPY_STAND, type CanopyStand } from '../sim/canopyStand';
 import { SpottingSystem } from '../sim/spottingSystem';
 import { GroundCrew } from '../sim/groundCrew';
@@ -76,8 +77,28 @@ export interface Scenario {
   terrain?: TerrainOptions;
   /** Anderson numbers for the generic terrain classes. Default FM1/FM6/FM9. */
   fuelMapping?: TerrainFuelMapping;
-  /** Rothermel fire-model options; `canopy` may be partial (merged over the default stand). */
-  fireModel?: Omit<RothermelFireModelOptions, 'canopy'> & { canopy?: Partial<CanopyStand> };
+  /** Fire-model options; `canopy` may be partial (merged over the default stand). */
+  fireModel?: Omit<RothermelFireModelOptions & HuygensFireModelOptions, 'canopy'> & {
+    canopy?: Partial<CanopyStand>;
+  };
+  /**
+   * How the front is **carried** — not how fast it spreads, which is the same
+   * Rothermel-plus-Anderson-ellipse law either way
+   * (`docs/plans/phase-11-smooth-wavefront.md` §2b).
+   *
+   *  - `'raster'` (default): {@link RothermelFireModel}, arrival-time
+   *    accumulators along 16 rays. Every measured number in `docs/science.md`
+   *    was taken on this path, so it stays the default until Stage 3 argues
+   *    otherwise — the same escape-hatch discipline as `spreadTemplate: 'ring8'`.
+   *  - `'huygens'`: {@link HuygensFireModel}, marker points on the perimeter.
+   *    Smoother and sub-cell-accurate; still missing perimeter merging and
+   *    crossover removal (Stages 2 and 3).
+   *
+   * The raster-only knobs (`spreadShape`, `spreadTemplate`) are ignored under
+   * `'huygens'`, and the marker-only ones (`markerSpacing`, `maxAdvance`,
+   * `seedRadius`, `seedVertices`) under `'raster'`.
+   */
+  spreadEngine?: 'raster' | 'huygens';
   weather: ScenarioWeather;
   /**
    * Ignition cells, or `'center'`. Every ignition lights the nearest burnable
@@ -129,7 +150,10 @@ export function loadScenario(s: Scenario): LoadedScenario {
 
   const fm = s.fireModel ?? {};
   const canopy = { ...DEFAULT_CANOPY_STAND, ...(fm.canopy ?? {}) };
-  const fire = new RothermelFireModel(fuel, { ...fm, canopy });
+  const fire =
+    s.spreadEngine === 'huygens'
+      ? new HuygensFireModel(fuel, { ...fm, canopy })
+      : new RothermelFireModel(fuel, { ...fm, canopy });
 
   const crew = s.agents?.crew ? new GroundCrew(fuel, s.agents.crew) : null;
   const engine = s.agents?.engine ? new Engine(s.agents.engine) : null;

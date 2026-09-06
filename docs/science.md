@@ -58,6 +58,34 @@ exist, and how a cell decides it has been reached.
 | Cross-checks | `tests/spread-shape.test.ts` (overspeed guard — no direction may exceed the ideal windless radius; isotropy; the LB gate at 5 m/s), `tests/spread-ros.test.ts` (the planar front still runs at the analytic Rothermel rate), `tests/suppression.test.ts` (a **one**-cell cut line holds, and a one-cell gap in it leaks) |
 | Escape hatch | `spreadTemplate: 'ring8'` restores the Phase-2..8 law — 8 rays, one accumulator — **byte-for-byte**, verified against the pre-Phase-8b build on three presets. Kept because every earlier measured number in this document was taken against it, and because it is what `CaFireModel` still uses. |
 
+## 1c. Propagation, the other way — a marker front (Richards 1990; FARSITE)
+
+§1b carries the fire as arrival-time accumulators on a fixed ray template. This
+carries it as a **polygon of marker points** that each move by Richards'
+elliptical growth equations and get painted into the same layers. It is a
+different fire model behind the same seam, not a setting on the old one, and it
+is **not the default** — see the escape-hatch row.
+
+| | |
+|---|---|
+| Modules | `src/sim/richards.ts` (growth equations, pure), `src/sim/perimeter.ts` (density control, no-skip rasterising traversal, point-in-ring, segment crossing), `src/sim/huygensFireModel.ts` |
+| Source | **Not BehavePlus** — it is a *point* model library with no propagation in it at all. The maths is Richards (1990), *An elliptical growth model of forest fire fronts and its numerical solution*, Int. J. Numer. Methods Eng. 30:1163–1179, transcribed from the FARSITE 4 C++ (`edigley/farsite`, `fsxwmech.cpp` `Mechanix::grow` and `Mechanix::ellipse`), which stands to Richards as BehavePlus does to Rothermel. The Richards paper is paywalled and the Forest Service copy of RMRS-RP-4 is a scanned image, so the reference implementation is the source, never recall. |
+| The law is unchanged | FARSITE's `lb_ratio` is character-for-character our `lengthToBreadthRatio` (Anderson 1983, cap 8 included), and its Alexander head/backing ratio is our `backingRate` in disguise — `1/HB = (1−E)/(1+E)`. So the ellipse this propagates is the ellipse §1a already reads rates off. **Only the carrying changed.** |
+| Ellipse dimensions | `a = R/(1+E)`, `c = a·E`, `b = R·√((1−E)/(1+E))` — the *axes*, not rates. FARSITE's `ellipse()` reuses the names `head`/`flank`/`back` for both and reassigns in place, and plugging the raw head rate in as the semi-major axis still produces something that looks like a fire, which is why they are named apart here. |
+| Growth | `V = −(a²q/D)·ĥ + (b²p/D)·ĝ + c·ĥ`, with `ĥ` the head direction, `ĝ = (v, −u)`, `p`/`q` the tangent's components in that basis and `D = √(a²q² + b²p²)`. No trigonometry at all — which matters, because it runs per marker per substep. The tangent is `previous − next`; FARSITE's extra re-projection for unequal adjacent segments (`fsxwmech.cpp:174`) is not transcribed, because density control holds neighbouring edges inside a factor of two. |
+| Winding | **Counter-clockwise as seen on screen** (x right, **y down**), which in this left-handed frame gives a *negative* shoelace area. Settled by derivation, not by trying both signs: the four analytic cases (head → `a+c = R`, back → `−B`, widest marker → `b` across plus a drift `c` along, and `E = 0` → `R` outward everywhere) all come out right only for that winding. |
+| Containment | Advance is capped at half a cell per substep, then the tick's remaining time is decremented — FARSITE's own `Mechanix::limgrow`. A marker whose new position lands in nonburnable fuel does not move, and rasterisation never ignites a nonburnable cell. Both halves of the Phase-4 containment claim hold on this path, pinned by this model's own barrier pair in `tests/huygens.test.ts`: a one-cell line stops the front, a one-cell gap in it leaks. (Running `tests/suppression.test.ts` itself unmodified on this path is Stage 2's gate — it needs crews, which need merging.) At `dt = 1 s` and 30 m cells a marker would have to run at 15 m/s to reach the cap, so on the shipped presets the substep loop runs once — the cap is load-bearing for *correctness*, not for cost. |
+| Density control | Edges are held in [¼, ½] cell, inserting and removing vertices each substep. FARSITE derives its target from the fire's own mean segment length; ours is fixed to the grid, because the bound that matters is a *rasterising* one — an edge much longer than half a cell can straddle a cell the sweep fails to paint. |
+| Intensity | A marker sits **on the fire edge**, so its rate is the one perpendicular to the perimeter (Richards' velocity, Behave's Catchpole-et-al-1982 form) rather than the focus form §1a uses for a front expanding from an ignition point. Both are in `fireEllipse.ts`; a marker front is the first caller that wants the other one. The FM10 crown proxy is read off its own ellipse **with the same tangent**, so both rates handed to Van Wagner's I₀ test are normal-form — mixing the two forms would shift crown initiation with nothing erroring. |
+| Measured shape | Windless, 30 cells of travel: the **front** is max/min **1.0022** and 0.9983 of the due-east radius at 11.25°, against the 16-ray raster's 1.080 / 0.959 on the same field. Length-to-breadth error against Anderson: **−0.4 / −1.0 / −1.8 / −3.0 / −4.4 %** at 1 / 2 / 3 / 4 / 5 m/s. Under a wind 30° off-axis the head lands at 31.0°. |
+| …and what the grid does to it | Read back out of the `fire` layer instead of off the polygon, the same windless run measures 1.050 max/min. At a 30-cell radius on 30 m cells, one cell *is* 3 %. That residual is the raster the front is painted onto, not the front, and no propagation scheme removes it. |
+| Cost shape | O(perimeter points), not O(front cells), and no per-cell accumulators — the 16 `Float32` of §1b (67 MB at `?size=1024`) go away entirely. Against that, one linear scan per tick to notice externally-lit cells, and no vectorisation. |
+| Burned area | On a flat uniform field, **1.135×** the raster's windless and **1.434×** at 3 m/s. The raster's error was flank width and it *understated* area (§9), so a smooth front burning more is the expected direction; the wind-driven magnitude was under-predicted. |
+| Not yet | Perimeter **merging** (two fires that have grown together), **crossover/loop removal** (a front burning into a bay crosses itself), and burnable **enclaves**, which are out of scope for the phase. |
+| …and why that bites | Until merging lands this path is not usable on a preset with spotting, and the reason is **cost, not shape**: rings are never retired, and burning does not change a cell's fuel id, so a marker sitting inside the burn scar still passes the burnable test and keeps moving. A ring wholly enclosed by burnt ground therefore expands forever. The output stays correct (painting short-circuits on an already-ignited cell), but a preset that throws hundreds of embers accumulates hundreds of ever-growing rings. Retiring a ring is properly part of merging, which is why the two are one stage. |
+| Cross-checks | `tests/richards.test.ts` (the dimensions against `fireEllipse.ts`, the four convention cases, the expansion gate, the signed oblique gate, and the integrated envelope against `R(θ) = R_head·(1−E)/(1−E·cos θ)`), `tests/perimeter.test.ts`, `tests/huygens.test.ts` |
+| Escape hatch | It **is** the escape hatch. `spreadEngine: 'raster'` is the default and every measured number in this document was taken on it; `'huygens'` opts in. |
+
 ## 2. Fuel — the 53 standard models (Anderson 13 + Scott & Burgan 40)
 
 | | |
@@ -306,8 +334,17 @@ upslope only.
 
 ## 9. What is *not* modelled (and why)
 
-- **A smooth wavefront.** The *directional law* is elliptical (§1a) and
-  *propagation* is now a 16-ray shortest path (§1b), but it is still a raster of
+- **A smooth wavefront — on the default path.** A marker front now exists
+  (§1c) and measures essentially exact: 1.0022 max/min windless against the
+  raster's 1.080, and length-to-breadth within 4.4 % out to 5 m/s. But
+  `spreadEngine: 'raster'` is still the **default**, it is what every other
+  number in this document was measured on, and the marker front cannot yet merge
+  two perimeters that have grown together — so on any preset with spotting the
+  raster is not merely the default but the only usable engine. Everything below
+  therefore still describes what a run actually does today.
+
+  The *directional law* is elliptical (§1a) and
+  *propagation* is a 16-ray shortest path (§1b), but it is still a raster of
   finitely many rays, so the burned region is a 16-gon inscribed in the true
   shape rather than a smooth curve. Two measured consequences
   (`tests/spread-shape.test.ts`, `docs/plans/phase-8-elliptical-spread.md`):
@@ -326,8 +363,8 @@ upslope only.
   byte-for-byte.
   A 32-ray template would keep shrinking the polygon defect at 4 floats per cell
   per added ray, with the same supercover gate on every long move; the honest
-  next step is instead **FARSITE-style Huygens expansion** — marker points on the
-  perimeter rather than a raster — which is a later fire model behind the same
+  next step was instead **FARSITE-style Huygens expansion** — marker points on the
+  perimeter rather than a raster — which is §1c, a later fire model behind the same
   seam (handoff §4.2), not a wider stencil.
 - **A one-cell *diagonal* barrier.** A nonburnable line laid corner-to-corner is
   leaked through by the √2 rays, because two cells meeting at a corner do not
