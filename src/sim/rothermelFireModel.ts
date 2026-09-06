@@ -116,6 +116,14 @@ const FM10 = ANDERSON_13.get(10)!;
 export type WindReference = 'midflame' | 'open';
 
 /**
+ * The convention a model assumes when a scenario says nothing. Exported so
+ * `loadScenario` can hand the *same* default to the spotting system, which needs
+ * the 20-ft wind for Albini's spotting distance and must never disagree with the
+ * fire model about what the wind layer is.
+ */
+export const DEFAULT_WIND_REFERENCE: WindReference = 'midflame';
+
+/**
  * How the front's rate varies with direction.
  *  - `'elliptical'` (default, Phase 8): wind and slope combine **once per cell**
  *    as vectors into a single head rate and direction of maximum spread, and
@@ -548,7 +556,7 @@ export class RothermelFireModel implements IFireModel {
       herbLoadTransfer !== undefined
         ? { dead10h: o.dead10hMoisture, dead100h: o.dead100hMoisture, liveHerb, liveWoody, herbLoadTransfer }
         : undefined;
-    this.windReference = o.windReference ?? 'midflame';
+    this.windReference = o.windReference ?? DEFAULT_WIND_REFERENCE;
     this.canopy = o.canopy ?? DEFAULT_CANOPY_STAND;
     this.crownEnabled = o.crownFire ?? true;
     this.elliptical = (o.spreadShape ?? 'elliptical') === 'elliptical';

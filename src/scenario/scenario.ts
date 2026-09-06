@@ -128,10 +128,8 @@ export function loadScenario(s: Scenario): LoadedScenario {
   const moisture = new FuelMoistureSystem();
 
   const fm = s.fireModel ?? {};
-  const fire = new RothermelFireModel(fuel, {
-    ...fm,
-    canopy: { ...DEFAULT_CANOPY_STAND, ...(fm.canopy ?? {}) },
-  });
+  const canopy = { ...DEFAULT_CANOPY_STAND, ...(fm.canopy ?? {}) };
+  const fire = new RothermelFireModel(fuel, { ...fm, canopy });
 
   const crew = s.agents?.crew ? new GroundCrew(fuel, s.agents.crew) : null;
   const engine = s.agents?.engine ? new Engine(s.agents.engine) : null;
@@ -144,7 +142,11 @@ export function loadScenario(s: Scenario): LoadedScenario {
   if (aircraft) systems.push(aircraft);
   if (retardant) systems.push(retardant);
   systems.push(fire);
-  if (s.spotting ?? true) systems.push(new SpottingSystem(fuel));
+  // Spotting gets the fire model's own canopy stand (Albini's downwind cover
+  // height) and wind convention, so the two can never read the world differently.
+  if (s.spotting ?? true) {
+    systems.push(new SpottingSystem(fuel, { canopy, windReference: fm.windReference }));
+  }
 
   const sim = new Simulation(world, systems);
 

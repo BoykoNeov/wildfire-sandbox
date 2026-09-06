@@ -3,6 +3,10 @@ import type { System } from '../core/system';
 import type { IFuelModel } from '../models/IFuelModel';
 import { byteToFraction } from '../core/moisture';
 import { flameLength, kwPerMToBtuPerFtSec } from './rothermel';
+import { maxSpotDistanceM } from './spotDistance';
+import { DEFAULT_CANOPY_STAND, type CanopyStand } from './canopyStand';
+import { unshelteredWaf } from './windAdjustment';
+import { DEFAULT_WIND_REFERENCE, type WindReference } from './rothermelFireModel';
 
 /**
  * Phase-3 spotting (Handoff §2.1 "plume rise / spotting = modeled
@@ -59,16 +63,100 @@ import { flameLength, kwPerMToBtuPerFtSec } from './rothermel';
  * surface fire under it — a ~1.4× flame-length effect, not the ~6× a crown run
  * actually spots at).
  *
+ * **Heat-driven loft distance.** How far a brand carries is Albini's maximum
+ * spotting distance for a wind-driven surface fire (`sim/spotDistance.ts`,
+ * BehavePlus `spot.cpp`), evaluated on the same recorded fireline intensity: the
+ * plume lofts a brand to `z = 1.055·√(f·I_B)` feet and it then drifts downwind
+ * over the canopy. That closes the last piece of the Phase-3 phenomenology — the
+ * launch *rate* has read intensity since Phase 6, but distance was wind × canopy
+ * × crown tier with no heat in it at all, so a smouldering front and a fierce one
+ * threw brands equally far. Three consequences worth knowing:
+ *  - Distance now grows like √I (through z) and then faster still through the
+ *    log ratio z/h: at a fixed 10 m/s wind under 15.7 m of canopy, a 1000 kW/m
+ *    front reaches 339 m and a 30 000 kW/m front 1335 m — ≈3.9×, where before
+ *    they were identical.
+ *  - **Canopy now cuts two ways.** It still raises the launch rate (brand
+ *    availability), but as Albini's *downwind cover height* it also catches
+ *    brands: the same brand over short cover carries much further than over tall
+ *    timber. Cover height is taken at the source cell (stand height × its canopy
+ *    fraction) — the honest thing is the cover where the brand *lands*, but that
+ *    is circular, since the landing point is what we are solving for.
+ *  - The draw stays exponential, about a mean of {@link SPOT_MEAN_FRACTION} ×
+ *    canopy fraction × Albini's maximum, so the tail can exceed that maximum.
+ *    That is deliberate, not a bug: Albini's number is the extreme of a whole
+ *    brand population and ours is one draw per cell per tick. Capping it would
+ *    pile a few percent of every fire's embers onto one radius and draw a visible
+ *    arc of spot fires. The canopy term is a **brand-burnout** stand-in, not the
+ *    old plume-height proxy returning — see {@link SPOT_MEAN_FRACTION} and
+ *    {@link BRAND_SURVIVAL_FLOOR}.
+ *
+ * **Which wind.** Albini's relations are defined on the **20-ft open** wind. The
+ * option {@link SpottingOptions.windReference} says what the world's wind layer
+ * is; every shipped preset authors it as `'open'`, so the conversion is the
+ * identity there, and under `'midflame'` the 20-ft wind is backed out through the
+ * source fuel's unsheltered WAF — the same move the crown proxy makes in
+ * `rothermelFireModel.ts`. It shares the fire model's default so the two systems
+ * cannot end up reading one wind layer two ways. The launch *rate* deliberately
+ * keeps reading the layer wind unconverted: it is a tuned phenomenological rate,
+ * not a published relation with a defined measurement height.
+ *
  * Deliberately phenomenological, not a firebrand-transport CFD: one ember per
- * burning cell per tick, an exponential (heavy-tailed) downwind loft distance
- * scaled by wind speed and canopy, and a moisture-gated landing probability. It
- * should *feel* right (spot fires bloom downwind of an intense, wind-driven,
- * timbered front and jump firebreaks) without claiming to predict brand lofting.
+ * burning cell per tick, a heavy-tailed draw against a published maximum
+ * distance, and a moisture-gated landing probability. No brand burnout in flight,
+ * no plume rise, no ridge/valley correction. It should *feel* right (spot fires
+ * bloom downwind of an intense, wind-driven, timbered front and jump firebreaks)
+ * without claiming to predict brand lofting.
  */
+export interface SpottingOptions {
+  /**
+   * The canopy stand the `canopy` byte layer modulates — its height is Albini's
+   * downwind cover height. Defaults to {@link DEFAULT_CANOPY_STAND}; `loadScenario`
+   * passes the scenario's own stand, the same record the fire model gets.
+   */
+  canopy?: CanopyStand;
+  /**
+   * What the world's `windU/windV` layer is. Defaults to
+   * {@link DEFAULT_WIND_REFERENCE}, the fire model's own default, and
+   * `loadScenario` forwards the scenario's setting — so the two systems can never
+   * disagree about one wind layer.
+   */
+  windReference?: WindReference;
+}
+
 export class SpottingSystem implements System {
   readonly name = 'fire:spotting';
 
-  constructor(private readonly fuel: IFuelModel) {}
+  private readonly canopy: CanopyStand;
+  private readonly windReference: WindReference;
+  /** Layer-wind → 20-ft-open-wind factor per fuel id; filled lazily (see `openWindFactor`). */
+  private readonly openWindCache = new Float64Array(256).fill(-1);
+
+  constructor(
+    private readonly fuel: IFuelModel,
+    options: SpottingOptions = {},
+  ) {
+    this.canopy = options.canopy ?? DEFAULT_CANOPY_STAND;
+    this.windReference = options.windReference ?? DEFAULT_WIND_REFERENCE;
+  }
+
+  /**
+   * Factor turning this cell's layer wind into the 20-ft open wind Albini wants:
+   * 1 when the layer already is that wind, else the reciprocal of the fuel's own
+   * unsheltered WAF (the reduction a 20-ft wind would have suffered over that
+   * bed) — mirroring `RothermelFireModel.openWind`. A fuel with no Rothermel
+   * descriptor has no bed depth to reason about and is left unconverted.
+   */
+  private openWindFactor(fuelId: number): number {
+    if (this.windReference === 'open') return 1;
+    let f = this.openWindCache[fuelId];
+    if (f < 0) {
+      const rf = this.fuel.getParams(fuelId).rothermel;
+      const waf = rf ? unshelteredWaf(rf.depth) : 0;
+      f = waf > 0 ? 1 / waf : 1;
+      this.openWindCache[fuelId] = f;
+    }
+    return f;
+  }
 
   step(world: WorldState, dt: number): void {
     const { width, height, cellSize, rng, layers } = world;
@@ -117,8 +205,8 @@ export class SpottingSystem implements System {
         // this tick. Such a cell falls back to the reference rate rather than going
         // silent; do not "fix" this to 0, it would mute spotting under the CA
         // pipeline entirely and let a just-landed brand be a dead source.
-        const iKw = intensity[i];
-        const heat = iKw > 0 ? flameLength(kwPerMToBtuPerFtSec(iKw)) / REF_FLAME_LENGTH : 1;
+        const iKw = intensity[i] > 0 ? intensity[i] : SPOT_REF_INTENSITY_KW;
+        const heat = flameLength(kwPerMToBtuPerFtSec(iKw)) / REF_FLAME_LENGTH;
 
         // dt-robust launch Bernoulli: p = 1 − exp(−rate·dt), so the per-tick
         // chance is consistent whatever dt the caller uses (same form as the
@@ -133,12 +221,22 @@ export class SpottingSystem implements System {
         const pLaunch = 1 - Math.exp(-rate * dt);
         if (rng.next() >= pLaunch) continue;
 
-        // Heavy-tailed downwind loft distance: exponential (mean = loftScale),
-        // so most brands drop near and a few carry far. Scale grows with wind
-        // (transport), canopy (plume height) and crowning (column height).
+        // Heavy-tailed downwind loft distance: exponential about a fraction of
+        // Albini's maximum spotting distance for this front (see the header). The
+        // maximum is a real function of how hard the cell burns, the 20-ft wind,
+        // the canopy that has to be cleared, and how high a crown run launches its
+        // brands; the mean is then cut back by how long a brand from this fuel
+        // survives the flight at all.
+        const wind20 = windSpeed * this.openWindFactor(fuelL[i]);
+        const dMaxM = maxSpotDistanceM(
+          iKw,
+          wind20,
+          this.canopy.standHeightM * canopyFrac,
+          CROWN_HEIGHT_BOOST[crownType],
+        );
         const u = rng.next();
-        const loftScale = LOFT_PER_WIND * windSpeed * (0.5 + canopyFrac) * CROWN_LOFT_BOOST[crownType];
-        const distM = -Math.log(1 - u) * loftScale;
+        const survival = BRAND_SURVIVAL_FLOOR + (1 - BRAND_SURVIVAL_FLOOR) * canopyFrac;
+        const distM = -Math.log(1 - u) * SPOT_MEAN_FRACTION * survival * dMaxM;
 
         // Bearing = wind direction ± a jitter cone (brands scatter about downwind).
         const bearing = Math.atan2(wv, wu) + (rng.next() - 0.5) * 2 * SPREAD_ANGLE_RAD;
@@ -197,8 +295,54 @@ const SPOT_RATE_BASE = 0.02;
 const SPOT_REF_INTENSITY_KW = 1000;
 /** Flame length [ft] of the reference front; the divisor of the ratio. */
 const REF_FLAME_LENGTH = flameLength(kwPerMToBtuPerFtSec(SPOT_REF_INTENSITY_KW));
-/** Loft-distance scale, metres of mean drop per (m/s of wind). */
-const LOFT_PER_WIND = 6;
+/**
+ * Mean of the exponential loft draw, as a fraction of Albini's **maximum**
+ * spotting distance for the same front (and of the source's canopy fraction —
+ * see below). Albini's number is where the furthest brand of a population lands;
+ * most drop far shorter, so the per-brand mean has to sit well below it. 0.3
+ * lands the reference front — a timbered 1000 kW/m cell in a 10 m/s wind, 339 m
+ * maximum → 80 m mean — within 4 % of the 77 m the hand-tuned `LOFT_PER_WIND`
+ * produced there, and a crowning cell within 3 % of its old ×2.5 reach, so
+ * ordinary timber spotting *feels* unchanged and only the extremes move.
+ *
+ * **Why canopy multiplies the mean: brand burnout, not plume height.** Albini's
+ * distance is how far a brand that *survives the flight* can travel; whether it
+ * survives depends on what it is. Timber sheds bark plates and cones that stay
+ * alight for minutes; grass and litter throw brands that burn out in seconds.
+ * The sandbox has no brand-size or burnout model (`docs/science.md` §9), and the
+ * canopy byte is the only handle it has on what kind of brand a cell produces —
+ * so canopy scales the *mean flight*, which is burnout's first-order effect
+ * (burnout caps flight time; distance is wind × time).
+ *
+ * This is **not** the old `LOFT_PER_WIND` canopy term returning. That one stood
+ * for plume height, and plume height now comes from the fire's own intensity
+ * through Albini's `z`. Canopy appears in this system three times, for three
+ * different reasons: brand *availability* (launch rate), brand *durability*
+ * (here), and Albini's downwind *cover height* that catches brands — which
+ * pushes the other way, since less cover means a longer throw.
+ *
+ * Measured consequence: it is what keeps a fierce grass fire from spotting like
+ * timber. Before it, an intense 0.04-canopy grass cell threw brands up to 1.6 km
+ * and grass sources produced 599 of `grass-valley`'s 673 spot fires — an
+ * open-ground Albini answer with nothing to say that grass brands do not survive
+ * the trip.
+ */
+const SPOT_MEAN_FRACTION = 0.3;
+/**
+ * The share of a full-canopy brand's flight that a canopy-*free* cell's brand
+ * still manages — the intercept of the burnout term above, so survival is
+ * `0.05 + 0.95 × canopy fraction` rather than canopy fraction flat.
+ *
+ * It is not zero because open fuels do throw *something* that survives a little
+ * (a clump, a fence post, a cow pat), and it is small because that something is
+ * rare. Set at 0.05, which reproduces the previously tuned grass reach almost
+ * exactly — a 0.04-canopy cell keeps a ~27 m mean throw against the old
+ * formula's ~26 m — while leaving timber (0.795 vs 0.784) untouched. Without it,
+ * plain canopy fraction halves grass's reach and takes ~20 % off `grass-valley`'s
+ * burned area, a bigger change to a shipped preset than this step has any
+ * business making.
+ */
+const BRAND_SURVIVAL_FLOOR = 0.05;
 /** Half-width of the downwind scatter cone, radians (~20°). */
 const SPREAD_ANGLE_RAD = 0.35;
 /** Landing ignition probability at zero moisture; scaled down by dampness. */
@@ -219,5 +363,24 @@ const DEFAULT_EXTINCTION_MOISTURE = 0.3;
  * the heat term alone would quietly gut spotting in the crown scenario.
  */
 const CROWN_LAUNCH_BOOST = [1, 3, 6];
-/** Loft-distance multiplier by crown state — a taller convective column carries further. */
-const CROWN_LOFT_BOOST = [1, 1.5, 2.5];
+/**
+ * Firebrand-**height** multiplier by crown state [none, passive, active] — the
+ * loft-distance counterpart of {@link CROWN_LAUNCH_BOOST}, and the place crown
+ * fire enters Albini's distance.
+ *
+ * It multiplies the lofted height `z`, not the distance, because that is where
+ * crowning physically acts: a torching tree throws brands from the canopy up a
+ * far taller column than the surface plume, which is exactly the branch of
+ * Albini's model (burning pile, `z = 12.2 × flame height`; torching trees,
+ * `z = a·t^b·flame height + tree height/2`) that this system does not implement.
+ * Pushing the multiplier through the height rather than the answer means the
+ * canopy the brand must clear still gets its say.
+ *
+ * Values re-derived, not carried over: distance is sub-linear in height, so
+ * ×1.6 / ×3.0 on `z` reproduce the ×1.5 / ×2.5 on *distance* that the previous
+ * hand-tuned constants gave at the reference front (measured 1.49× / 2.47×).
+ * Crown cells also record higher intensity than the surface fire under them, so
+ * a crown run now reaches a little further than that on top — which is the
+ * intended direction, crowning being the classic long-range spotting engine.
+ */
+const CROWN_HEIGHT_BOOST = [1, 1.6, 3.0];

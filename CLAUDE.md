@@ -182,11 +182,34 @@ the moisture half; it is the Scott & Burgan 40 that would make it dominant, and
 that catalogue is still §9's deferral (the mechanic, its prerequisite, is now
 done). Shipped with the **season pair** — `spring-green` / `late-season-cured`,
 one landscape and one weather where `greenness` is the only field that differs:
-2.34× the burned area and 1.59× the mean fireline intensity at one hour.
-Next: the two remaining honest gaps in `docs/science.md` §9 — a smooth wavefront
-(now Huygens; the raster route is spent) and intensity-driven ember loft distance
-— then the additive future phases (WUI structures → industrial). Each phase must
-be runnable and verifiable before the next.
+2.25× the burned area and 1.60× the mean fireline intensity at one hour (both
+re-measured after the loft-distance step below). →
+**Intensity-driven ember loft distance** ✅ (`docs/science.md` §6): how far a
+firebrand carries was wind × canopy × crown tier with no heat in it, so a
+smouldering front and a fierce one threw brands equally far. It is now **Albini's
+maximum spotting distance** for a wind-driven surface fire (new pure module
+`src/sim/spotDistance.ts`, transcribed from BehavePlus `spot.cpp` and pinned
+against an independent transcription of the same C++), read off the recorded
+fireline intensity the launch rate has used since Phase 6: the plume lofts a
+brand to `z = 1.055·√(f·I_B)` feet and it drifts downwind over the canopy. At
+10 m/s under 15.7 m of canopy that is 339 m for a 1000 kW/m front against 1335 m
+for a 30 000 kW/m one. Two things came with it. **Canopy changed meaning**: it is
+no longer a plume-height proxy but three separate things — brand availability,
+brand durability, and Albini's downwind cover height, the last of which pushes
+the *other* way (less cover to catch a brand ⇒ longer throw). And the **brand
+survival term is load-bearing, not a fudge**: Albini's relations describe a brand
+that survives the flight, so without a burnout stand-in an intense grass fire
+spots like crowning timber — measured 1.6 km throws and double `grass-valley`'s
+burned area. Keyed to canopy (bark plates and cones survive minutes, grass brands
+seconds) it holds the shipped presets within a few percent of where they were
+(`timber-crown-run` 16 093 → 16 474 cells at one hour) while the *range* of
+distances opens up with intensity. The crown boost moved from distance to
+firebrand height, which is where crowning physically acts. `timber-crown-run`'s
+golden is recomputed; the old loft formula is gone, not flag-restorable.
+Next: the last honest gap in `docs/science.md` §9 that is a *phase* — a smooth
+wavefront (Huygens marker points; the raster route is spent, so this needs a plan
+doc of its own) — then the additive future phases (WUI structures → industrial).
+Each phase must be runnable and verifiable before the next.
 
 One scope note carried by `?size=`: the terrain generator samples in normalized
 coordinates, so a bigger map is the same landscape spread over more ground —

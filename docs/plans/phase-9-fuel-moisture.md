@@ -160,8 +160,12 @@ author but not demonstrated in the menu. A paired preset is the obvious follow-u
 
 > **Done in Phase 9b:** `spring-green` / `late-season-cured` — one landscape, one
 > weather, one ignition, `greenness` the only field that differs, every band
-> carrying live fuel (FM2 grass / FM5 brush / FM10 timber). 2.34× the burned area
-> and 1.59× the mean fireline intensity at one hour.
+> carrying live fuel (FM2 grass / FM5 brush / FM10 timber). 2.25× the burned area
+> and 1.60× the mean fireline intensity at one hour — 939 cells against 417, mean
+> fireline intensity 1591 against 995 kW/m. (As shipped in Phase 9b these read
+> 2.34× / 1.59×, 989 against 422; the intensity-driven ember loft distance that
+> followed moved the burned counts a few percent and left the intensity ratio
+> alone. Same measurement, full size, one hour.)
 
 ## Where this leaves `docs/science.md` §9
 

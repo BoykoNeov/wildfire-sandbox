@@ -265,3 +265,104 @@ describe('spotting launch rate scales with recorded fireline intensity', () => {
     expect(embersInOneTick(SEEDS[0], 0)).toBeGreaterThan(0); // non-vacuous
   });
 });
+
+/**
+ * The loft-distance follow-up: how far a brand carries reads the same recorded
+ * fireline intensity the launch rate does, through Albini's spotting distance
+ * (`src/sim/spotDistance.ts`, pinned separately in `tests/spotDistance.test.ts`).
+ * This is the *wiring* test — that the system actually asks for that distance —
+ * and it measures where embers land, not how many, because the launch rate
+ * already scales with intensity and would otherwise carry the assertion on its
+ * own. Same spotting-only, single-tick setup as the launch-rate test above, so
+ * every ignition counted came from a wall cell whose intensity we set.
+ */
+describe('spotting loft distance scales with recorded fireline intensity', () => {
+  const WW = 60;
+  const HH = 40;
+  const WALL_X = 6;
+
+  /** Downwind offsets [cells] of every ember ignition from one tick of spotting. */
+  function offsetsInOneTick(seed: number, iKw: number): number[] {
+    const world = createWorld({ width: WW, height: HH, seed, cellSize: 30 });
+    world.layers.fuel.data.fill(FM_TIMBER);
+    world.layers.moisture.data.fill(DRY);
+    world.layers.canopy.data.fill(CANOPY);
+    world.layers.windU.data.fill(WIND_EAST);
+    for (let y = 0; y < HH; y++) {
+      const i = y * WW + WALL_X;
+      world.layers.fire.data[i] = FireState.Burning;
+      world.layers.intensity.data[i] = iKw;
+    }
+
+    new Simulation(world, [new SpottingSystem(new Anderson13FuelModel())]).step(1);
+
+    const fire = world.layers.fire.data;
+    const out: number[] = [];
+    for (let i = 0; i < fire.length; i++) {
+      const x = i % WW;
+      if (x === WALL_X) continue; // the wall itself
+      if (fire[i] !== FireState.Unburned) out.push(x - WALL_X);
+    }
+    return out;
+  }
+
+  const SEEDS = [1, 2, 7, 42, 1337, 2024];
+
+  it('a fierce front lands its brands far further downwind than a marginal one', () => {
+    const cool: number[] = [];
+    const hot: number[] = [];
+    for (const seed of SEEDS) {
+      cool.push(...offsetsInOneTick(seed, 300));
+      hot.push(...offsetsInOneTick(seed, 30000));
+    }
+    const mean = (a: number[]): number => a.reduce((s, v) => s + v, 0) / a.length;
+    expect(cool.length).toBeGreaterThan(0);
+    expect(hot.length).toBeGreaterThan(0);
+    // Every brand still lands downwind of the wall, whatever the intensity.
+    expect(Math.min(...cool, ...hot)).toBeGreaterThan(0);
+    // Albini: z is 10x higher for the 100x fiercer front, and the flat-terrain
+    // term grows again through the ratio z/h, so the mean throw is several times
+    // longer. Before this step it was IDENTICAL - distance never saw intensity.
+    // A loose margin: the assertion is the law's direction and rough size, not
+    // the constants (the hot draw also loses its longest brands off the map edge,
+    // which biases the measured ratio DOWN).
+    expect(mean(hot)).toBeGreaterThan(mean(cool) * 3);
+    expect(Math.max(...hot)).toBeGreaterThan(Math.max(...cool) * 2);
+  });
+
+  it('a canopy-free source throws far shorter than a timbered one at equal heat', () => {
+    // Brand burnout: grass and litter brands do not survive a long flight, and
+    // the canopy byte is the only handle the sandbox has on what kind of brand a
+    // cell makes. Without it, Albini's open-ground answer lets a fierce grass
+    // fire spot like crowning timber (measured: 1.6 km throws, and grass sources
+    // producing 599 of `grass-valley`'s 673 spot fires).
+    const bare = (seed: number): number[] => {
+      const world = createWorld({ width: WW, height: HH, seed, cellSize: 30 });
+      world.layers.fuel.data.fill(FM_TIMBER);
+      world.layers.moisture.data.fill(DRY);
+      world.layers.canopy.data.fill(10); // ~0.04: open grass, still just able to launch
+      world.layers.windU.data.fill(WIND_EAST);
+      for (let y = 0; y < HH; y++) {
+        const i = y * WW + WALL_X;
+        world.layers.fire.data[i] = FireState.Burning;
+        world.layers.intensity.data[i] = 30000;
+      }
+      new Simulation(world, [new SpottingSystem(new Anderson13FuelModel())]).step(1);
+      const fire = world.layers.fire.data;
+      const out: number[] = [];
+      for (let i = 0; i < fire.length; i++) {
+        const x = i % WW;
+        if (x !== WALL_X && fire[i] !== FireState.Unburned) out.push(x - WALL_X);
+      }
+      return out;
+    };
+    const open: number[] = [];
+    const timbered: number[] = [];
+    for (const seed of [1, 2, 7, 42, 1337, 2024, 99, 512]) {
+      open.push(...bare(seed));
+      timbered.push(...offsetsInOneTick(seed, 30000));
+    }
+    expect(open.length).toBeGreaterThan(0); // it still spots, just not far
+    expect(Math.max(...open)).toBeLessThan(Math.max(...timbered));
+  });
+});

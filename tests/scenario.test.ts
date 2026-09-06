@@ -188,6 +188,15 @@ describe('presets', () => {
     // needles and the stand is slightly less keen to torch (FM10 fireline
     // intensity −3.6% at 3% fine moisture). Previous value: 2410933397 — reachable
     // by dropping the two `dead*hMoisture` fields from the preset.
+    //
+    // Recomputed once more for the intensity-driven loft distance: how far an
+    // ember carries is now Albini's spotting distance (`sim/spotDistance.ts`)
+    // rather than wind × canopy × crown tier, so the ember ignitions in this run
+    // land in different places. Previous value: 4181824974 — not reachable by a
+    // flag; the old loft formula is gone. At full size and one hour the preset
+    // itself barely moves (16 093 → 16 474 cells burned, mean ember jump 88 →
+    // 91 m); what changes is that a fierce cell now throws further than a
+    // marginal one instead of identically far.
     const l = loadScenario(shrink(findPreset('timber-crown-run')!));
     l.sim.run(1200, 1);
     const { fire, intensity, crown } = l.world.layers;
@@ -204,7 +213,7 @@ describe('presets', () => {
       mix(kw >>> 16);
     }
     for (let i = 0; i < crown.data.length; i++) mix(crown.data[i]);
-    expect(h >>> 0).toBe(4181824974);
+    expect(h >>> 0).toBe(2552629230);
   });
 
   it('the season pair differs in greenness and nothing else', () => {
@@ -227,8 +236,8 @@ describe('presets', () => {
 
   it('the cured member burns more than the green one (measured)', { timeout: 30000 }, () => {
     // One landscape, one weather, one ignition: the whole difference is live fuel.
-    // At full size and one hour this is 989 cells against 422 (x2.34) with mean
-    // fireline intensity x1.59; shrunk to 128 for the suite it is the same story
+    // At full size and one hour this is 939 cells against 417 (x2.25) with mean
+    // fireline intensity x1.60; shrunk to 128 for the suite it is the same story
     // at a smaller scale, so the assertion is the ordering plus a margin.
     const burn = (id: string): number => {
       const l = loadScenario(shrink(findPreset(id)!));
