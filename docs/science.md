@@ -107,6 +107,14 @@ outside the standard triples, chosen to bound the effect):
 | FM12 medium slash | 0.913 | 0.853 |
 | FM13 heavy slash | 0.891 | 0.811 |
 
+**The crown-proxy bed sees the split too.** Rothermel's 1991 crown rate runs
+Anderson FM10 as a stand-in for crown fuel at the *site's* moistures (§5), and
+that bed is assembled by the same call, so the coarse dead classes move it as
+well as the surface bed. This is deliberate — the crown proxy is a fuel bed like
+any other — and given the intensity asymmetry below it is plausibly the larger of
+the two routes by which per-class moisture changes a run. Foliar moisture is
+separate and unaffected (it stays a canopy-stand property).
+
 Two honest readings of that table. First, this is a **small** lever on spread
 rate — under BehavePlus's own 6/7/8 triple the largest model moves 1.6 %, because
 the heat sink weights each particle by exp(−138/σ): ≈ 0.93 for fine fuel, 0.28 at
@@ -126,7 +134,9 @@ whether a stand torches, not how fast the flank creeps.
 | Pinned by | `tests/moistureScenarios.test.ts` |
 
 This also splits live **herbaceous** from live **woody**, which the bed had been
-running at one shared value. Like the coarse dead classes (§3a) it is a scenario
+running at one shared value. As in §3a it reaches the FM10 crown-proxy bed as
+well as the surface bed — FM10 carries live woody, so greenness moves the crown
+rate too. Like the coarse dead classes (§3a) it is a scenario
 input rather than sim state, and for the same reason: live fuel greens up and
 cures over weeks, not over the minutes-to-hours a sandbox run covers.
 

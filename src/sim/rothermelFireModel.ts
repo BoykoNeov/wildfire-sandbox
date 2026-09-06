@@ -683,7 +683,15 @@ export class RothermelFireModel implements IFireModel {
     return bed;
   }
 
-  /** The FM10 crown-proxy bed for a cell, or null when the cell cannot crown. */
+  /**
+   * The FM10 crown-proxy bed for a cell, or null when the cell cannot crown.
+   *
+   * It gets the same {@link bedMoisture} as the surface bed on purpose: Rothermel's
+   * 1991 crown rate runs FM10 as a stand-in for crown fuel at the *site's*
+   * moistures, so the per-class dead split and the greenness curve belong here too
+   * (`docs/science.md` §3a). Foliar moisture is separate — it lives on the canopy
+   * stand and is untouched by this.
+   */
   private crownBedFor(canopyByte: number, moistureByte: number): BedIntermediates | null {
     if (!this.crownEnabled) return null;
     if (canopyBulkDensity(canopyByte, this.canopy) < MIN_CROWN_CBD) return null;
