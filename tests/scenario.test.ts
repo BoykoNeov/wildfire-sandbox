@@ -229,16 +229,21 @@ describe('presets', () => {
       fireModel: { ...p.fireModel, greenness: undefined },
     });
     expect(strip(green)).toEqual(strip(cured));
-    expect(green.fireModel?.greenness).toBe(1);
+    expect(green.fireModel?.greenness).toBe(0.6);
     expect(cured.fireModel?.greenness).toBe(0);
-    expect(green.fireModel?.dynamicHerbLoad).toBe(true);
+    // Neither member forces the transfer: the bands are Scott & Burgan models
+    // that carry their own `dynamic` flag, so the default already cures GR2 and
+    // GS2 and leaves the static TU5 alone.
+    expect(green.fireModel?.dynamicHerbLoad).toBeUndefined();
+    expect(green.fuelMapping).toEqual({ grass: 102, brush: 122, timber: 165 });
   });
 
   it('the cured member burns more than the green one (measured)', { timeout: 30000 }, () => {
     // One landscape, one weather, one ignition: the whole difference is live fuel.
-    // At full size and one hour this is 939 cells against 417 (x2.25) with mean
-    // fireline intensity x1.60; shrunk to 128 for the suite it is the same story
-    // at a smaller scale, so the assertion is the ordering plus a margin.
+    // At full size and one hour this is 1032 cells against 125 (x8.26) with mean
+    // fireline intensity 583 against 237 kW/m (x2.47); shrunk to 128 for the suite
+    // it is the same story at a smaller scale, so the assertion is the ordering
+    // plus a margin.
     const burn = (id: string): number => {
       const l = loadScenario(shrink(findPreset(id)!));
       l.sim.run(3600, 1);

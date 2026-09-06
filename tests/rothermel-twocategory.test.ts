@@ -4,7 +4,9 @@ import {
   liveMoistureOfExtinction,
   type FuelBed,
 } from '../src/sim/rothermel';
-import { ANDERSON_13, fuelBed, deadFuelBed, hasLiveFuel } from '../src/sim/anderson13';
+import { ANDERSON_13, fuelBed, deadFuelBed, hasLiveFuel, herbLoadTransferFraction } from '../src/sim/anderson13';
+import { SCOTT_BURGAN_40 } from '../src/sim/scottBurgan40';
+import SB_REFERENCE from './fixtures/sb40-reference-r0.json';
 import { createWorld, FireState, type WorldState } from '../src/core/world';
 import { Simulation } from '../src/core/simulation';
 import { RothermelFireModel } from '../src/sim/rothermelFireModel';
@@ -70,6 +72,45 @@ describe('two-category surfaceSpread vs firelab/behave reference algorithm', () 
     const bed = fuelBed(ANDERSON_13.get(fm)!, DEAD, LIVE);
     expect(liveMoistureOfExtinction(bed)).toBeCloseTo(expected, 5);
   });
+});
+
+/**
+ * The same cross-check extended to the **Scott & Burgan 40** (Phase 10). These
+ * models put shapes through `surfaceSpread` that no Anderson model has — a live
+ * herbaceous *and* a live woody class in the same bed (all GS, SH1, SH9, TU1,
+ * TU3), a fourth dead class arriving from the dynamic load transfer, and 1-hr
+ * SAVs down at 750 — so the assembly deserves its own pin rather than inheriting
+ * the Anderson one.
+ *
+ * Literals produced by an independent verbatim port of the same two BehavePlus
+ * files, written from the C++ at revision `aa1b4a07` and not from `rothermel.ts`
+ * (see the file header for why that matters). Regime: dead 8 % in all three
+ * classes, live 100 % in both, no wind, no slope, and the herbaceous load
+ * transfer applied exactly where the catalogue's `dynamic` flag says — which at
+ * 100 % live herbaceous moisture is a fraction of 0.223, not 0 and not 1, so the
+ * transfer path is genuinely exercised. Agreement is to ~1e-15 relative on all
+ * forty; the assertion is to 5 decimal places.
+ */
+describe('two-category surfaceSpread vs the reference algorithm — Scott & Burgan 40', () => {
+  const sbBed = (n: number) => {
+    const m = SCOTT_BURGAN_40.get(n)!;
+    return fuelBed(m, DEAD, LIVE, { herbLoadTransfer: m.dynamic ? herbLoadTransferFraction(LIVE) : 0 });
+  };
+
+  it('covers all forty models', () => {
+    expect(SB_REFERENCE).toHaveLength(40);
+  });
+
+  it.each(SB_REFERENCE)('$code R0 matches the reference to 5 figures', ({ n, r0 }) => {
+    expect(surfaceSpread(sbBed(n), CALM).rateOfSpreadNoWindSlope).toBeCloseTo(r0, 5);
+  });
+
+  it.each(SB_REFERENCE.filter((r) => r.mxLive > 0))(
+    '$code live moisture of extinction matches the reference',
+    ({ n, mxLive }) => {
+      expect(liveMoistureOfExtinction(sbBed(n))).toBeCloseTo(mxLive, 5);
+    },
+  );
 });
 
 describe('dead-only reduction (bit-identical to the single-category form)', () => {

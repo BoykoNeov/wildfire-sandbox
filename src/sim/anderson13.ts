@@ -34,7 +34,8 @@
  * reversal. The models are "exact" w.r.t. the published parameters, no longer
  * "dead-only".
  */
-import type { FuelParams, IFuelModel, RothermelFuel } from '../models/IFuelModel';
+import type { RothermelFuel } from '../models/IFuelModel';
+import { CatalogueFuelModel, type CatalogueModel } from './fuelCatalogue';
 import type { FuelBed, FuelParticle } from './rothermel';
 
 /** Standard 10-hr dead-fuel SAV σ [ft⁻¹] (BehavePlus `savrDead_[1]`). */
@@ -42,15 +43,12 @@ export const DEAD_10H_SAV = 109;
 /** Standard 100-hr dead-fuel SAV σ [ft⁻¹] (BehavePlus `savrDead_[2]`). */
 export const DEAD_100H_SAV = 30;
 
-/** A catalogue entry: a fuel model's identity plus its Rothermel descriptors. */
-export interface AndersonModel extends RothermelFuel {
-  /** Standard model number, 1–13. */
-  number: number;
-  /** Short code, e.g. "FM1". */
-  code: string;
-  /** Common name. */
-  name: string;
-}
+/**
+ * A catalogue entry: a fuel model's identity plus its Rothermel descriptors.
+ * The shape is shared with the Scott & Burgan 40 (`fuelCatalogue.ts`); the alias
+ * keeps `AndersonModel` readable at call sites that mean "one of the 13".
+ */
+export type AndersonModel = CatalogueModel;
 
 /**
  * Raw parameter rows, columns in the SAME order as BehavePlus
@@ -253,53 +251,18 @@ export function fuelBed(
   return bed;
 }
 
-const NONBURNABLE: FuelParams = { burnable: false, spreadRate: 0, burnDuration: 0 };
-
 /**
  * Phase-2 fuel model serving the Anderson 13 catalogue. `getParams` takes a
  * native Anderson model number (1–13); 0 or any unknown id is nonburnable. The
  * mapping from terrain's generic fuel ids onto Anderson numbers is a wiring
  * concern handled where the world is built, not here.
  *
- * The returned `FuelParams` fills the `rothermel` slice; the legacy CA fields
- * (`spreadRate`/`burnDuration`) are inert zeros — this catalogue is meant for the
- * Rothermel fire model, which derives burnout from fuel residence time, not for
- * the Phase-1 CA.
+ * The caching, the nonburnable fallback and the `FuelParams` shape are the same
+ * for every standard catalogue, so they live in {@link CatalogueFuelModel};
+ * `scottBurgan40.ts` serves its 40 the same way.
  */
-export class Anderson13FuelModel implements IFuelModel {
-  // `FuelParams` are immutable data, so build one object per model number and
-  // hand back the same reference on every call. The Rothermel fire model calls
-  // `getParams` for every non-burned cell each tick (~millions/sec on a full
-  // grid); without this cache each call allocated a fresh nested object, pure GC
-  // churn against the per-cell performance invariant. Indexed by fuel id (0–13),
-  // not a Map, to keep the hot-loop lookup a plain array read.
-  private readonly cache: FuelParams[] = [];
-
-  getParams(fuelType: number): FuelParams {
-    const cached = this.cache[fuelType];
-    if (cached) return cached;
-    const m = ANDERSON_13.get(fuelType);
-    const params: FuelParams = m
-      ? {
-          burnable: true,
-          spreadRate: 0,
-          burnDuration: 0,
-          rothermel: {
-            dead1hLoad: m.dead1hLoad,
-            dead10hLoad: m.dead10hLoad,
-            dead100hLoad: m.dead100hLoad,
-            liveHerbLoad: m.liveHerbLoad,
-            liveWoodyLoad: m.liveWoodyLoad,
-            dead1hSav: m.dead1hSav,
-            liveHerbSav: m.liveHerbSav,
-            liveWoodySav: m.liveWoodySav,
-            depth: m.depth,
-            deadMx: m.deadMx,
-            heatContent: m.heatContent,
-          },
-        }
-      : NONBURNABLE;
-    this.cache[fuelType] = params;
-    return params;
+export class Anderson13FuelModel extends CatalogueFuelModel {
+  constructor() {
+    super(ANDERSON_13);
   }
 }

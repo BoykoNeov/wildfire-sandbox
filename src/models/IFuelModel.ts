@@ -47,6 +47,18 @@ export interface RothermelFuel {
   deadMx: number;
   /** Low heat content of the dead fuel h [BTU/lb] (typically 8000). */
   heatContent: number;
+  /**
+   * True when the catalogue declares this a **dynamic** model: one whose live
+   * herbaceous load cures into the dead fuel as it dries (BehavePlus
+   * `isDynamic`; `docs/science.md` §3c). All thirteen Anderson models are static;
+   * 17 of the Scott & Burgan 40 are dynamic.
+   *
+   * This is a catalogue *convention* rather than a physical descriptor, so it
+   * sits slightly oddly among the rest — but the fire model holds only a
+   * `RothermelFuel` at the point where it must decide whether to cure a bed, and
+   * a second lookup keyed by fuel id would be worse. Absent = static.
+   */
+  dynamic?: boolean;
 }
 
 export interface FuelParams {

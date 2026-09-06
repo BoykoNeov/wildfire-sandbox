@@ -18,7 +18,7 @@ claim here can be checked in under a minute.
 | Form | Two-category (dead / live) 1972 model as assembled in BehavePlus: per-category surface-area weighting, Albini SAV-size-class net loads, live moisture of extinction `M_x,live = 2.9·W·(1 − M_dead/M_x,dead) − 0.226`, reaction intensity summed over categories. `R = I_R·ξ·(1 + φ_w + φ_s) / (ρ_b·ε·Q_ig)`. |
 | Outputs | Rate of spread (ft/min → m/s at the boundary), reaction intensity, Byram fireline intensity `I_B = I_R·R·τ/60`, flame length `L = 0.45·I_B^0.46`, residence time `τ = 384/σ`. |
 | Units | Native imperial inside (every published constant was fitted that way), converted once at the module boundary (plan §D2). |
-| Cross-checks | `tests/rothermel.test.ts` (emxsys/behave regression values), `tests/rothermel-twocategory.test.ts` (verbatim port of firelab/behave `surfaceFuelbedIntermediates.cpp` at zero wind/slope, hand-worked live M_x). |
+| Cross-checks | `tests/rothermel.test.ts` (emxsys/behave regression values), `tests/rothermel-twocategory.test.ts` (independent verbatim port of firelab/behave `surfaceFuelbedIntermediates.cpp` + `surfaceFireReactionIntensity.cpp` at zero wind/slope, hand-worked live M_x). The port covers **all 53 standard models**: the Scott & Burgan half exercises bed shapes no Anderson model has — a live herbaceous *and* a live woody class together, the transferred fourth dead class, 1-hr SAVs at 750 — and agrees to ~1e-15 relative. Its literals are regenerable with `tools/sb40ReferencePort.mjs`, which is written from the C++ and never imports `rothermel.ts`. |
 | Performance | `prepareFuelBed` (everything independent of wind/slope) runs once per front cell — cached by fuel × dead-moisture byte. Under the default elliptical law (§1a) the wind/slope half also runs **once per cell**, not once per direction. |
 
 ## 1a. Directional spread — the fire ellipse (Anderson 1983; Alexander 1985)
@@ -58,14 +58,24 @@ exist, and how a cell decides it has been reached.
 | Cross-checks | `tests/spread-shape.test.ts` (overspeed guard — no direction may exceed the ideal windless radius; isotropy; the LB gate at 5 m/s), `tests/spread-ros.test.ts` (the planar front still runs at the analytic Rothermel rate), `tests/suppression.test.ts` (a **one**-cell cut line holds, and a one-cell gap in it leaks) |
 | Escape hatch | `spreadTemplate: 'ring8'` restores the Phase-2..8 law — 8 rays, one accumulator — **byte-for-byte**, verified against the pre-Phase-8b build on three presets. Kept because every earlier measured number in this document was taken against it, and because it is what `CaFireModel` still uses. |
 
-## 2. Fuel — Anderson 13 (1982)
+## 2. Fuel — the 53 standard models (Anderson 13 + Scott & Burgan 40)
 
 | | |
 |---|---|
-| Module | `src/sim/anderson13.ts`; terrain classes mapped by `src/sim/terrainFuelModel.ts` |
-| Data | All 13 standard models transcribed from BehavePlus `fuelModels.cpp` (loads oven-dry lb/ft², SAV ft⁻¹, depth ft, dead M_x, 8000 BTU/lb). 10-hr / 100-hr SAV fixed at 109 / 30. |
-| Terrain mapping | Generic terrain ids (grass / brush / timber) → Anderson numbers per scenario. Default FM1 / FM6 / FM9; the crown-run unit uses FM2 / FM4 / FM10. |
-| Pinned by | `tests/anderson13.test.ts` |
+| Modules | `src/sim/anderson13.ts`, `src/sim/scottBurgan40.ts`, shared machinery in `src/sim/fuelCatalogue.ts`; terrain classes mapped by `src/sim/terrainFuelModel.ts` |
+| Data | All 13 Anderson (1982) models at numbers **1–13** and all 40 Scott & Burgan (2005, RMRS-GTR-153) models at **101–204**, transcribed from BehavePlus `fuelModels.cpp` (SAV ft⁻¹, depth ft, dead M_x, 8000 BTU/lb — 9000 for GR6). Anderson loads are oven-dry lb/ft² in the source; the Scott & Burgan rows are tons/acre there and keep those literals, converting by `2000/43560` in code, so a row still reads like the C++. 10-hr / 100-hr SAV fixed at 109 / 30 throughout. |
+| Number ranges | Disjoint by design, so one lookup serves both (`STANDARD_FUEL_MODELS`) and a scenario may mix them freely. These are the numbers every other tool and every LANDFIRE raster uses. |
+| Dynamic models | 17 of the 40 (all nine GR, all four GS, SH1, SH9, TU1, TU3) carry BehavePlus' `isDynamic` flag, which reaches the bed as `RothermelFuel.dynamic` and gates the herbaceous load transfer per model (§3c). All 13 Anderson models are static. Exactly the models with a live herbaceous load are flagged. |
+| Terrain mapping | Generic terrain ids (grass / brush / timber) → model numbers per scenario. Default FM1 / FM6 / FM9 — deliberately still Anderson, since every measured number in this document was taken against it. The crown-run unit uses FM2 / FM4 / FM10; the season pair uses GR2 / GS2 / TU5. |
+| Not transcribed | BehavePlus' regional (`SCAL*`), international (`V-*`, `M-*`) and non-burnable (`NB*`) rows. Two of those carry **different dead and live heat contents**, which the single-`heatContent` fuel bed cannot represent; all 53 standard models use one value for both, which is what makes that field honest (pinned). |
+| Transcription note | TL5's live *woody* SAV reads `160` in `fuelModels.cpp` where the published table and every sibling row say 1600. TL5 carries no live woody load, so it is inert in every calculation; it is reproduced as the source has it rather than silently corrected, on the same principle as the residue in §3c. |
+| Pinned by | `tests/anderson13.test.ts`; `tests/scottBurgan40.test.ts` — whose parameter check runs against `tests/fixtures/sb40-fuelModels.json`, **generated from the C++ by `tools/sb40Fixture.mjs`** rather than retyped, so it is a real check on the hand step and not a restatement of it |
+
+The Anderson 13 remain the default and remain fully served; the second catalogue
+is additive. What it buys is (a) a fuel vocabulary that distinguishes dry- from
+humid-climate fuels, four grass-shrub bands, nine shrub models and nine litter
+models where the 13 collapse them, and (b) — the reason it was built — models the
+curing mechanic can actually act on: see §3c.
 
 ## 3. Dead-fuel moisture — Simard (1968) EMC + 1-hr timelag
 
@@ -149,11 +159,13 @@ for curing keeps that honest whichever way §3c is set.
 
 | | |
 |---|---|
-| Module | `herbLoadTransferFraction` + the `herbLoadTransfer` bed option in `src/sim/anderson13.ts`; option `dynamicHerbLoad` on `RothermelFireModel` |
+| Module | `herbLoadTransferFraction` + the `herbLoadTransfer` bed option in `src/sim/anderson13.ts`; option `dynamicHerbLoad` and the per-fuel resolver `bedOptionsFor` on `RothermelFireModel` |
 | Data | BehavePlus `surfaceFuelbedIntermediates.cpp`, `dynamicLoadTransfer()` — and `loadDead_[3]` / `savrDead_[3]` / `moistureDead_[3]` for where the transferred load lands |
 | Form | Fraction of the live herbaceous load that has cured, read off the live herbaceous moisture in use: 1 below 30 %, `1.333 − 1.11·M` from 30 % to 120 %, 0 above. That load leaves the live category and becomes a **fourth dead class**, at the model's live-herbaceous SAV and the *fine* dead moisture. |
-| Default | **Off.** Omitting `dynamicHerbLoad` reproduces the static Anderson bed byte-for-byte, for every one of the 13 models. |
-| Pinned by | `tests/anderson13.test.ts` ("herbaceous load transfer") |
+| Gate | Per **fuel model**, on the catalogue's own `isDynamic` flag (§2) — what BehavePlus does. `dynamicHerbLoad` overrides it in either direction: `true` forces the transfer on for every model (the Anderson extension described below), `false` forces it off for all, and *omitted is not the same as false*. |
+| Default | Every one of the 13 Anderson models is static, so the default bed is byte-identical to the pre-Phase-10 one for every scenario that uses them. In the Scott & Burgan 40 the 17 dynamic models cure by default, which is the whole point of that catalogue. |
+| Resolver | The transfer feeds both the spread bed and the flame-residence characteristic SAV, so the gate resolves in one place and both read it: a fuel has exactly one dead bed. Two non-issues: the prepared-bed cache needs no extra dimension (its key already contains the fuel id, and the gate is a function of the fuel id), and the FM10 crown proxy is unaffected either way because FM10 carries no herbaceous load. |
+| Pinned by | `tests/anderson13.test.ts` ("herbaceous load transfer"), `tests/scottBurgan40.test.ts` ("the curing lever, measured") |
 
 Cured grass is dry grass, so BehavePlus needs no separate curing input for the
 standard models: the transfer reads the same live herbaceous moisture §3b sets.
@@ -187,11 +199,55 @@ happens to slow the model down. It also coarsens the dead bed (characteristic SA
 2941 → 2784, the transferred class arriving at SAV 1500), so flame residence time
 rises 1.057×.
 
-So for **this** catalogue the load half is the *minor* lever and it pulls against
-the moisture half: green → cured moves FM2's R₀ ×1.38 on moisture alone and ×1.32
-with the transfer on. That is the opposite of the situation in the Scott & Burgan
-40, where the herbaceous load is a far larger share of the bed and the models are
-dynamic by design — which is why §9 still lists that catalogue as the upgrade.
+So for the **Anderson** catalogue the load half is the *minor* lever and it pulls
+against the moisture half: green → cured moves FM2's R₀ ×1.38 on moisture alone
+and ×1.32 with the transfer on.
+
+### The same mechanic in the Scott & Burgan 40 — measured
+
+That FM2 result is a property of *that model*, not of the mechanic, and Phase 10
+brought in the catalogue where the mechanic bites. The prediction written down
+before measuring was "cured burns much more, the opposite direction from FM2",
+because GR2 carries ten parts live herbaceous to one part dead where FM2 carries
+one to seven. It holds, and by more than expected.
+
+**Green → cured** (greenness 1 → 0, both halves, dead 6 / 10 / 9 %, midflame wind
+350 ft/min), as a multiple of the green value:
+
+| model | R₀ | fireline intensity |
+|---|---|---|
+| GR2 | ×50.2 | ×546 |
+| GR4 | ×38.4 | ×327 |
+| GS2 | ×10.4 | ×45.5 |
+| TU1 | ×7.10 | ×22.8 |
+| TU3 | ×3.02 | ×4.15 |
+| *FM2, for scale* | *×1.32* | *×1.23* |
+
+**Which half does the work.** Turning the transfer on and off with the season held
+at fully cured isolates it. On the grass models it is the *dominant* half —
+GR2 ×19.4 on R₀, GR4 ×14.9 — where on FM2 it is ×0.958. The share of the bed that
+is herbaceous is what decides: GS2 ×1.54, TU1 ×1.06, and on **SH9** it goes
+negative again at ×0.895 (R₀) and ×0.751 (intensity), because SH9 carries only 1.55
+of its 15.5 tons/acre as herbaceous and its dead M_x is 40 %. The direction of this
+half is a property of the model, not of the catalogue — §3c's original mechanism
+is intact, it just usually points the other way here.
+
+**The strongest form of the result: for a dynamic grass model the transfer is not
+an enhancement, it is a precondition.** Left in the live category, GR2's
+herbaceous load is damped against a live moisture of extinction that even 30 %
+exceeds, so ~90 % of the bed contributes nothing and R₀ stays under 0.2 ft/min at
+*every* season. Run the season pair with `dynamicHerbLoad: false` and the map
+burns 0.2 ha in an hour instead of 92.9. This is why the gate follows the
+catalogue by default rather than staying off: serving these models without the
+transfer would be serving them wrong.
+
+**And fully green grass does not carry fire at all.** At greenness ≥ 0.8 the
+season pair's ignition dies inside five cells; burned area at one hour over the
+greenness ladder runs 0.1 / 0.4 / 5.0 / 11.3 / 19.4 / 58 / 154 / 269 / 372 / 450 ha
+at greenness 1.0 / 0.8 / 0.7 / 0.6 / 0.5 / 0.4 / 0.3 / 0.2 / 0.1 / 0 (GR2 grass,
+SH5 brush, TU5 timber). Monotone, and steepest between 0.7 and 0.4. That is the
+right physics and a useless scenario, which is why the shipped pair's green member
+sits at 0.6 rather than 1.
 
 ## 4. Wind — reference height and the wind adjustment factor
 
@@ -296,14 +352,15 @@ upslope only.
 - **Live fuel moisture *dynamics*.** There is a seasonal curve now (§3b), but it
   is evaluated once from a scenario knob, not integrated over a season. Same
   reasoning as the coarse dead classes: the swing is weeks long and a run is not.
-- **A fuel catalogue the herbaceous load transfer can bite on.** The transfer
-  itself is now modelled (§3c), but the Anderson 13 are static models and only
-  **FM2** carries a live herbaceous load, so the mechanic has exactly one model to
-  act on and moves it by ≤ 16 %. Curing is a big lever in the Scott & Burgan 40,
-  whose dynamic grass and grass-shrub models carry most of their load as live
-  herbaceous — that is a catalogue addition (the parameters sit in the same
-  BehavePlus `fuelModels.cpp` the Anderson 13 came from), not a tweak to the
-  model. The transfer mechanic is the prerequisite, and it is done.
+- **Fuel models beyond the 53 standard ones.** The Scott & Burgan 40 landed in
+  Phase 10 (§2), which closes the gap this list used to record here — curing now
+  has 17 dynamic models to act on and moves the grass ones by 50× rather than
+  16 % (§3c). What is still absent is *custom* fuel models: BehavePlus lets a user
+  define a bed from scratch, and the regional (`SCAL*`) and international (`V-*`,
+  `M-*`) rows it ships are not transcribed. Two of those carry different dead and
+  live heat contents, which the single-`heatContent` fuel bed cannot represent, so
+  that is a `rothermel.ts` change and not a table addition. Nothing in the sandbox
+  needs it.
 - **Firebrand transport as particle physics.** Loft *distance* now reads the
   recorded fireline intensity through Albini's plume height (§6), which closes
   the gap this list used to record here. What is still absent is the layer under

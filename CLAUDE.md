@@ -57,9 +57,10 @@ Each commit should typecheck and pass tests. Conventional Commits style.
 `IFireModel`, `IFuelModel`, `IWeatherProvider`, `ISuppressionAgent`, `IRenderer`,
 and the unifying `IgnitableEntity`. All exist as stubs from Phase 1 so later
 phases are additive. The mounted pipeline is Rothermel (two-category, with the
-wind adjustment factor and crown fire evaluated inside `step`) over Anderson 13
-fuels; the Phase-1 `CaFireModel`/`BasicFuelModel` stay as the reference and back
-the determinism golden.
+wind adjustment factor and crown fire evaluated inside `step`) over the 53
+standard fuel models — Anderson 13 at ids 1–13, Scott & Burgan 40 at 101–204,
+one union lookup; the Phase-1 `CaFireModel`/`BasicFuelModel` stay as the reference
+and back the determinism golden.
 
 **Output layers** (`intensity` kW/m, `crown` 0/1/2) are written **only by the
 fire model** when a cell ignites; spotting, stats and the renderer read them.
@@ -79,9 +80,10 @@ cursors and wind arrows draw on the screen-resolution overlay canvas
 ```
 src/core/      world state, layers, rng, clock, system, simulation (the foundation)
 src/models/    the five swappable seam interfaces + IgnitableEntity
-src/sim/       pure science modules (rothermel, anderson13, emc, moistureScenarios,
-               windAdjustment, crownFire, canopyStand) + systems (fire models, weather, moisture,
-               spotting, suppression agents, retardant) + stats (pure)
+src/sim/       pure science modules (rothermel, fuelCatalogue + anderson13 + scottBurgan40,
+               emc, moistureScenarios, windAdjustment, crownFire, canopyStand, spotDistance)
+               + systems (fire models, weather, moisture, spotting, suppression agents,
+               retardant) + stats (pure)
 src/gen/       terrain generation (seeded value noise)
 src/scenario/  Scenario data + loadScenario (the ONE pipeline builder) + presets
 src/render/    palette (shared colour composition, view modes, smoke, per-world shading cache),
@@ -90,7 +92,8 @@ src/editor/    browser-only terrain editor + suppression command shell
 src/ui/        browser-only HUD (stats reader + run controls + legend + perf readout)
 src/main.ts    browser entry: loadScenario + renderer + editor + command + HUD, wall-clock pacing
 tools/         renderFrame.ts — headless PNG of any preset/view, same loader;
-               profile.ts — per-system / per-view timings (run via `npm run profile`)
+               profile.ts — per-system / per-view timings (run via `npm run profile`);
+               sb40Fixture.mjs — regenerates the Scott & Burgan parameter fixture
 tests/         headless tests — simulation.test.ts is the architecture proof
 docs/          science.md (model card), plans/ (per-phase plans + decisions)
 ```
@@ -206,6 +209,34 @@ seconds) it holds the shipped presets within a few percent of where they were
 distances opens up with intensity. The crown boost moved from distance to
 firebrand height, which is where crowning physically acts. `timber-crown-run`'s
 golden is recomputed; the old loft formula is gone, not flag-restorable.
+**P10 Scott & Burgan 40** ✅ (`docs/plans/phase-10-scott-burgan-40.md`): the fuel
+vocabulary goes from 13 models to 53. All 40 standard Scott & Burgan (2005) models
+at their published numbers 101–204, transcribed from the same BehavePlus
+`fuelModels.cpp` the Anderson 13 came from, served through one union lookup
+(`STANDARD_FUEL_MODELS`) beside the 13 at 1–13 — the number ranges are disjoint,
+so a scenario may mix them and nothing needs a mode flag. **No Rothermel maths
+changed, no new system, no new layer**; the fuel *layer* stays the generic 0–4
+terrain classes, so palette, editor, CA path and the determinism golden are
+untouched. `RothermelFuel` gains a `dynamic` flag and `dynamicHerbLoad` becomes
+three-state — omitted follows each model's own flag (BehavePlus's behaviour, and
+byte-identical for all 13 static Anderson models), `true` forces it on (the
+Phase-9b extension), `false` forces it off. The transcription is pinned against a
+fixture **generated from the C++** (`tools/sb40Fixture.mjs`), not retyped.
+**The measurement, which was predicted before it was taken and this time held:**
+green → cured moves GR2's R₀ ×50.2 and its fireline intensity ×546, against FM2's
+×1.32 / ×1.23 — and the *load* half, the minor and backwards lever in the Anderson
+13, is here the dominant one (GR2 ×19.4 on R₀ alone). It still flips sign where the
+herbaceous share is small (SH9 ×0.895), so §3c's mechanism is intact; it just
+usually points the other way. Strongest form: for a dynamic grass model the
+transfer is a **precondition, not an enhancement** — without it GR2 stays under
+0.2 ft/min at every season and the season pair burns 0.2 ha instead of 92.9.
+And a fully green landscape simply does not carry fire (ignition dead in five
+cells at greenness ≥ 0.8), which is why the **season pair moved to GR2/GS2/TU5
+with its green member at greenness 0.6, not 1**, and was re-measured: 8.26× the
+burned area and 2.47× the mean fireline intensity at one hour, against the old
+pair's 2.25× / 1.60×. Other presets and the default terrain mapping (FM1/FM6/FM9)
+are unmoved on purpose — every measured number in `docs/science.md` was taken
+against them.
 Next: the next gap in `docs/science.md` §9 that is a *phase* — a smooth
 wavefront (Huygens marker points; the raster route is spent, so this needs a plan
 doc of its own) — then the additive future phases (WUI structures → industrial).

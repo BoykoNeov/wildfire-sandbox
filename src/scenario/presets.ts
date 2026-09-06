@@ -168,13 +168,26 @@ const rainFront: Scenario = {
  * is the only field that differs** between the two members, so any difference on
  * screen is attributable to the season and nothing else.
  *
- * Every band carries live fuel, which is what makes the contrast visible at all:
- * grass is FM2 (the one Anderson model with a live *herbaceous* load), brush is
- * FM5 (~57 % live by load) and timber is FM10. Both members run with
- * `dynamicHerbLoad` on, so the season drives curing's *two* halves at once — the
- * live classes dry out along the greenness ladder, and the cured herbaceous load
- * moves into the dead fuel by the same moisture that dried it
- * (`docs/science.md` §3c).
+ * The bands are **Scott & Burgan** models (Phase 10), which is what makes the
+ * contrast worth looking at: grass is GR2 and brush is GS2, both of which the
+ * catalogue marks *dynamic* and both of which carry most of their load as live
+ * fuel (GR2 is ten parts live herbaceous to one part dead), so the season drives
+ * curing's two halves at once — the live classes dry along the greenness ladder
+ * and the cured herbaceous load moves into the dead fuel by the same moisture
+ * that dried it (`docs/science.md` §3c). Timber is TU5, a heavy *static*
+ * timber-shrub model: curing acts where the catalogue says it does and nowhere
+ * else, which is the honest version of the lesson. Neither member sets
+ * `dynamicHerbLoad` — with a catalogue that flags its own dynamic models, the
+ * default already does the right thing per band.
+ *
+ * **Why the green member is 0.6 and not 1.** On these fuels a fully green
+ * landscape does not carry fire at all: at greenness ≥ 0.8 the ignition dies
+ * inside five cells, because ~90 % of the grass bed sits above 100 % moisture and
+ * damps the reaction to nothing. That is the right physics and a useless
+ * scenario, so the green member sits at 0.6 — herbaceous 84 %, woody 114 %,
+ * "green but past peak" — where the fire creeps instead of running. The full
+ * curve is in `docs/science.md` §3c; it is monotone and steepest between 0.7 and
+ * 0.4.
  */
 function seasonUnit(id: string, name: string, greenness: number, description: string): Scenario {
   return {
@@ -185,11 +198,10 @@ function seasonUnit(id: string, name: string, greenness: number, description: st
     width: W,
     height: H,
     terrain: { waterLevel: 0.26, rockLevel: 0.88, grassBand: 0.5, brushBand: 0.8, moistureMin: 6, moistureMax: 26 },
-    fuelMapping: { grass: 2, brush: 5, timber: 10 },
+    fuelMapping: { grass: 102, brush: 122, timber: 165 }, // GR2 / GS2 / TU5
     fireModel: {
       windReference: 'open',
       greenness,
-      dynamicHerbLoad: true,
       dead10hMoisture: 0.08,
       dead100hMoisture: 0.09,
     },
@@ -210,11 +222,12 @@ function seasonUnit(id: string, name: string, greenness: number, description: st
 
 const springGreen = seasonUnit(
   'spring-green',
-  'Spring green',
-  1,
-  'Spring flush on a warm, breezy afternoon: the grass is growing, the brush is full of water. ' +
-    'Live fuel at 120 % (herb) and 150 % (woody) is a heat sink the fire has to dry before it can burn — ' +
-    'the same wind and the same dead fuel move a much smaller fire. Run it against "Late-season cured": ' +
+  'Green season',
+  0.6,
+  'A warm, breezy afternoon while the grass is still green: herbaceous fuel at 84 % moisture, woody at ' +
+    '114 %. Most of the fuel on this landscape is alive, and live fuel is a heat sink the fire has to dry ' +
+    'before it can burn — so the front creeps, backs off the wet flanks and mostly fails to leave the ' +
+    'grass. Green it a little further and it will not carry at all. Run it against "Late-season cured": ' +
     'the landscape, weather and ignition are identical and only the season differs.',
 );
 
@@ -222,10 +235,11 @@ const lateSeasonCured = seasonUnit(
   'late-season-cured',
   'Late-season cured',
   0,
-  'The same afternoon in the same place, months later. The grass has cured — down to 30 % moisture, ' +
-    'and what cured is no longer live fuel at all: it joins the dead fuel, as its own coarse class rather ' +
-    'than as fine 1-hr litter. The brush is at its seasonal low. Same wind, same dead-fuel moisture, a far ' +
-    'bigger fire — and almost all of that is the live classes drying out, not the load that moved.',
+  'The same afternoon in the same place, months later. The grass has cured — down to 30 % moisture, and ' +
+    'what cured is no longer live fuel at all: it joins the dead fuel, as its own coarse class rather ' +
+    'than as fine 1-hr litter. The brush is at its seasonal low. Same wind, same dead-fuel moisture, ' +
+    'eight times the burned area in the first hour and two and a half times the fireline intensity — and ' +
+    'in these fuels the load that moved is the larger half of that, not the smaller.',
 );
 
 /** All presets, in menu order. */

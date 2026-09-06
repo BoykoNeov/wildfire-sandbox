@@ -251,26 +251,36 @@ export interface RothermelFireModelOptions {
   /** Live woody moisture [fraction]; overrides {@link greenness}. */
   liveWoodyMoisture?: number;
   /**
-   * Treat the fuel models as **dynamic**: cure part of the live herbaceous load
-   * into the dead fuel, the fraction taken from the live herbaceous moisture in
-   * use (`herbLoadTransferFraction`, BehavePlus `dynamicLoadTransfer`). Default
-   * `false` — the static Anderson 13 bed, byte-for-byte, so no existing scenario
-   * moves.
+   * Whether to cure part of the live herbaceous load into the dead fuel — the
+   * fraction taken from the live herbaceous moisture in use
+   * (`herbLoadTransferFraction`, BehavePlus `dynamicLoadTransfer`). **Three
+   * states**, and omitted is not the same as `false`:
    *
-   * In the Anderson 13 catalogue only **FM2** carries a live herbaceous load, so
-   * this knob is visible in FM2 and inert everywhere else; the standard models
-   * are static by definition and the dynamic catalogue is Scott & Burgan's 40
-   * (`docs/science.md` §9). It pairs with {@link greenness}: one season knob
-   * drives both halves, because the transfer reads the moisture the season set.
+   * | value | meaning |
+   * |---|---|
+   * | omitted (default) | follow each fuel model's own `dynamic` flag — what BehavePlus does |
+   * | `true` | force it on for every model, dynamic or not |
+   * | `false` | force it off, even for a dynamic model |
    *
-   * **It makes FM2 burn *less*, which is not the intuition.** Curing is widely
-   * described as the dominant half because dead fine fuel is what carries fire —
-   * true in the dynamic catalogue, false here. The transferred class arrives at
-   * the live-herb SAV (1500 for FM2, against its fine 3000), so it is not fine
-   * 1-hr litter, and moving it changes no geometry at all: same total load, same
-   * depth, same packing ratio, same characteristic SAV. All that changes is which
-   * moisture of extinction damps it, and FM2's dead M_x is 15 % against a live
-   * M_x near 1044 %. R₀ ×0.957, fireline intensity ×0.841 at full cure. See
+   * The default leaves every Anderson bed byte-identical, because all thirteen
+   * standard models are static — so no existing scenario moves. In the Scott &
+   * Burgan 40 the flag is set on 17 models (all nine grass, all four grass-shrub,
+   * SH1, SH9, TU1, TU3) and those cure by default, which is the point of that
+   * catalogue. `true` is the Phase-9b extension: curing an Anderson model that
+   * the catalogue itself declares static. `false` isolates the moisture half of
+   * a season from the load half.
+   *
+   * It pairs with {@link greenness}: one season knob drives both halves, because
+   * the transfer reads the moisture the season set.
+   *
+   * **Forcing it on FM2 makes it burn *less*, which is not the intuition.** The
+   * transferred class arrives at the live-herb SAV (1500 for FM2, against its
+   * fine 3000), so it is not fine 1-hr litter, and moving it changes no geometry
+   * at all: same total load, same depth, same packing ratio, same characteristic
+   * SAV. All that changes is which moisture of extinction damps it, and FM2's
+   * dead M_x is 15 % against a live M_x near 1044 %. R₀ ×0.957, fireline
+   * intensity ×0.841 at full cure. The grass models of the dynamic catalogue,
+   * whose load is mostly live herbaceous, go the other way — see
    * `docs/science.md` §3c.
    */
   dynamicHerbLoad?: boolean;
@@ -432,13 +442,21 @@ export class RothermelFireModel implements IFireModel {
 
   private readonly liveMoisture: number;
   /**
-   * Per-class moisture splits and the cured-herbaceous load transfer, or
-   * `undefined` when the scenario asked for neither (then every class falls back
-   * to the positional moisture, nothing is transferred, and beds are
-   * byte-identical to the pre-split model). Built once and reused for every bed —
-   * these are constants, so the bed cache key stays (fuel id, fine moisture byte).
+   * The two bed-option records a fuel can get: without the cured-herbaceous load
+   * transfer and with it. `staticBedOptions` is `undefined` when the scenario
+   * asked for no per-class splits either (then every class falls back to the
+   * positional moisture, nothing is transferred, and beds are byte-identical to
+   * the pre-split model). Both are built once at construction and reused for
+   * every bed, so {@link bedOptionsFor} costs a branch rather than an allocation
+   * and the bed cache key stays (fuel id, fine moisture byte).
    */
-  private readonly bedOptions: BedOptions | undefined;
+  private readonly staticBedOptions: BedOptions | undefined;
+  private readonly curedBedOptions: BedOptions;
+  /**
+   * `true`/`false` force the transfer on/off for every model; `undefined` follows
+   * each fuel's own `dynamic` flag. See {@link RothermelFireModelOptions.dynamicHerbLoad}.
+   */
+  private readonly forceHerbLoad: boolean | undefined;
   private readonly windReference: WindReference;
   private readonly canopy: CanopyStand;
   private readonly crownEnabled: boolean;
@@ -545,17 +563,16 @@ export class RothermelFireModel implements IFireModel {
     // `liveMoisture` fallback — not `greenness` itself. BehavePlus reads
     // `moistureLive_[0]`, the value in use, and a scenario is allowed to set
     // `liveHerbMoisture` with no greenness at all.
-    const herbLoadTransfer = o.dynamicHerbLoad
-      ? herbLoadTransferFraction(liveHerb ?? this.liveMoisture)
-      : undefined;
-    this.bedOptions =
+    const herbLoadTransfer = herbLoadTransferFraction(liveHerb ?? this.liveMoisture);
+    this.forceHerbLoad = o.dynamicHerbLoad;
+    const splits =
       o.dead10hMoisture !== undefined ||
       o.dead100hMoisture !== undefined ||
       liveHerb !== undefined ||
-      liveWoody !== undefined ||
-      herbLoadTransfer !== undefined
-        ? { dead10h: o.dead10hMoisture, dead100h: o.dead100hMoisture, liveHerb, liveWoody, herbLoadTransfer }
-        : undefined;
+      liveWoody !== undefined;
+    const base = { dead10h: o.dead10hMoisture, dead100h: o.dead100hMoisture, liveHerb, liveWoody };
+    this.staticBedOptions = splits ? { ...base, herbLoadTransfer: undefined } : undefined;
+    this.curedBedOptions = { ...base, herbLoadTransfer };
     this.windReference = o.windReference ?? DEFAULT_WIND_REFERENCE;
     this.canopy = o.canopy ?? DEFAULT_CANOPY_STAND;
     this.crownEnabled = o.crownFire ?? true;
@@ -720,12 +737,32 @@ export class RothermelFireModel implements IFireModel {
     return out.ros / 60; // m/min → m/s
   }
 
+  /**
+   * The bed options for one fuel: with the cured-herbaceous load transfer, or
+   * without. The gate is `dynamicHerbLoad` when the scenario forced it either
+   * way, else the fuel model's own `dynamic` flag (`docs/science.md` §3c).
+   *
+   * There is exactly one of these because a fuel must have exactly **one** dead
+   * bed: the transfer feeds both the spread bed and the flame-residence
+   * characteristic SAV, and Phase 9b put it inside `deadFuelBed` precisely so the
+   * same cured grass that carries the fire also sets how long it burns.
+   *
+   * Two things that look like omissions and are not. The **bed cache needs no new
+   * dimension** — its key is `fuelId * 256 + moistureByte`, and this gate is a
+   * pure function of `fuelId`, as is `residenceSecById`'s. And the **FM10 crown
+   * proxy is unaffected** whichever way the gate falls: FM10 carries no live
+   * herbaceous load, so there is nothing to transfer.
+   */
+  private bedOptionsFor(rf: RothermelFuel): BedOptions | undefined {
+    return (this.forceHerbLoad ?? rf.dynamic === true) ? this.curedBedOptions : this.staticBedOptions;
+  }
+
   /** The prepared surface bed for a fuel at a dead-moisture byte (cached; see `bedCache`). */
   private surfaceBedFor(fuelId: number, rf: RothermelFuel, moistureByte: number): BedIntermediates {
     const key = fuelId * 256 + moistureByte;
     let bed = this.bedCache.get(key);
     if (bed === undefined) {
-      bed = prepareFuelBed(fuelBed(rf, byteToFraction(moistureByte), this.liveMoisture, this.bedOptions));
+      bed = prepareFuelBed(fuelBed(rf, byteToFraction(moistureByte), this.liveMoisture, this.bedOptionsFor(rf)));
       this.bedCache.set(key, bed);
     }
     return bed;
@@ -745,7 +782,7 @@ export class RothermelFireModel implements IFireModel {
     if (canopyBulkDensity(canopyByte, this.canopy) < MIN_CROWN_CBD) return null;
     let bed = this.crownBedCache[moistureByte];
     if (bed === undefined) {
-      bed = prepareFuelBed(fuelBed(FM10, byteToFraction(moistureByte), this.liveMoisture, this.bedOptions));
+      bed = prepareFuelBed(fuelBed(FM10, byteToFraction(moistureByte), this.liveMoisture, this.bedOptionsFor(FM10)));
       this.crownBedCache[moistureByte] = bed;
     }
     return bed;
@@ -1015,7 +1052,7 @@ export class RothermelFireModel implements IFireModel {
         burnElapsed[i] += dt;
         let residenceSec = this.residenceSecById.get(fuelL[i]);
         if (residenceSec === undefined) {
-          residenceSec = rf ? flameResidenceTime(bedSAV(rf, this.bedOptions)) * 60 : 0;
+          residenceSec = rf ? flameResidenceTime(bedSAV(rf, this.bedOptionsFor(rf))) * 60 : 0;
           this.residenceSecById.set(fuelL[i], residenceSec);
         }
         if (burnElapsed[i] >= residenceSec) next[i] = FireState.Burned;
