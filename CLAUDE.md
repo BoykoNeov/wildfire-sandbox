@@ -119,12 +119,19 @@ smoke, contours, crisp overlays, legend, profiler) → P7 part 2 items A–C ✅
 (amortised smoke, cached ground colour, compacted front list: the terrain frame
 is 3.69 → 1.67 ms at 256², the fire model 1.94 → 1.07 ms/step at 512²; the
 incremental dilation is deliberately NOT done — see item C) + items F ✅
-(spot-fire flash on fresh isolated ignitions, HUD-toggleable) and E ✅ (animated
-wind streamlines; the wind button cycles off → arrows → streamlines). Next: P7
-part 2 items D, G, H in `docs/plans/phase-7-visuals-performance.md` (bigger maps
-from the URL — read item D's caveat: the data views still cost 10–17 ms/frame at
-512² — and HUD/profiler odds and ends), the honest gaps
-in `docs/science.md` §9 (Huygens wavefront, per-class dead moisture,
-live-moisture curve, intensity-driven ember loft), then the additive future
-phases (WUI structures → industrial). Each phase must be runnable and verifiable
-before the next.
+(spot-fire flash on fresh isolated ignitions, HUD-toggleable), E ✅ (animated
+wind streamlines; the wind button cycles off → arrows → streamlines), D ✅
+(`?size=` maps, 64–1024, after extending the unburned-colour cache to all six
+views: the data views went 12–15 → 2.8–3.7 ms/frame at 512²) and H ✅ (contours
+toggle, view state in the URL, profiler budget line). G (a WebGL renderer) is
+written down but **not needed** — nothing misses the frame budget at 512².
+Next: the honest gaps in `docs/science.md` §9 (Huygens wavefront, per-class dead
+moisture, live-moisture curve, intensity-driven ember loft), then the additive
+future phases (WUI structures → industrial). Each phase must be runnable and
+verifiable before the next.
+
+One scope note carried by `?size=`: the terrain generator samples in normalized
+coordinates, so a bigger map is the same landscape spread over more ground —
+slopes at 512 are about half as steep as at 256. See item D in
+`docs/plans/phase-7-visuals-performance.md` for the alternative and why it was
+not taken unilaterally.

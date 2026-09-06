@@ -192,22 +192,49 @@ fire whenever the detection is wrong. If more sim speed is wanted,
 `suppression:retardant-field` (0.370, all at 512²) are plain whole-map sweeps of
 the same size and are the cheaper targets.
 
-### D. Larger maps from the URL (feature, browser only)
-**Change.** `main.ts`: read `?size=384|512` and load `{...preset, width, height}`
-(ignition points in presets are authored for 256 — when `size` is given, scale
-`ignitions` and `agents` cell coordinates by `size/256`; write a tiny helper
-`scaleScenario(s, size)` in `src/scenario/scenario.ts` with a unit test). Show
-the size in the Scenario panel description line. Keep 256 the default.
-**Verify.** `?size=512&scenario=grass-valley` runs at ≥ 30 fps at 120× after
-items A–C; the perf readout tells you.
-**Caveat measured after A–C** (`npm run profile -- timber-crown-run 1800
---size=512`): the *terrain* view is ready (3.9 ms/frame without smoke, 5.2 with)
-but the **data views are not** — fuel 10.2, moisture 11.8, canopy 10.6,
-intensity 9.6, elevation 16.7 ms/frame, because item B cached the terrain ground
-only. At 512² those views miss 60 fps on their own, before the sim's 2.5 ms/step
-is counted. Either extend the ground cache to the data views (their ground is a
-pure function of the same layers plus the view id — one cached buffer per view,
-invalidated together) or accept that `?size=512` is a terrain-view feature.
+### D. Larger maps from the URL (feature, browser only) — ✅ LANDED
+`?size=N` (64..1024, default and identity 256) re-authors the preset through
+`scaleScenario(s, size)` in `src/scenario/scenario.ts`; the Scenario panel says
+how big the map is in cells and kilometres.
+
+**The caveat this item was written with is now paid off, not accepted.** It read:
+after A–C the terrain view was ready at 512² but the data views were not (fuel
+10.2, moisture 11.8, canopy 10.6, intensity 9.6, elevation 16.7 ms/frame),
+because item B cached the terrain ground only, and it offered "extend the cache
+to the data views, or accept that `?size=512` is a terrain-view feature". The
+cache was extended first — see the commit "perf: cache the unburned colour for
+every view, not just terrain", which took the mounted view's unburned colour into
+the same one-band-a-frame buffer. Re-measured on this machine
+(`npm run profile -- timber-crown-run 1800 --size=512`), before → after:
+
+| view | before | after |
+|---|---|---|
+| fuel | 12.94 | 2.80 |
+| moisture | 15.49 | 3.07 |
+| elevation | 13.29 | 3.53 |
+| canopy | 14.93 | 3.65 |
+| intensity | 12.12 | 2.90 |
+| terrain | 8.26 | 6.56 |
+
+(The before column is this machine's own baseline, higher across the board than
+the numbers quoted above; compare within a column, not across.) Every view now
+fits the 60 fps budget at 512² with room to spare — the profiler's new budget
+line says so directly.
+
+**Why scaling cell coordinates is the whole transform**, and the one thing to
+know before authoring at another size: `generateTerrain` samples its value noise
+in *normalized* coordinates (`u = x/(width-1)`, against fixed 4/8/16/32 grids),
+so a seed draws the same landscape at any size. A point authored at 256 lands on
+the same hillside at `size/256`, and a test pins the property directly (elevation
+agrees within 20 m of a 0–1000 m range across the whole map between 256 and 512).
+`cellSize` is deliberately not scaled, so a bigger map is more **ground** — 512
+cells at 30 m is 15.4 km across, four times the area. The trade is that the fixed
+0–1000 m relief now spans twice the distance, so **slopes come out about half as
+steep**: a 512 run is a gentler landscape as well as a wider one, and a preset
+authored for 256 will spread less aggressively uphill there. If that ever needs
+to change, the alternative is scaling the noise grids with the map (same feature
+size in cells, same slopes) at the cost of 512 being a *different* landscape from
+256 — a scope call for the repo owner, not a silent fix.
 
 ### E. Animated wind streamlines (visual, overlay canvas only) — ✅ LANDED
 `WindParticles` in `overlay.ts`: 600 particles in cell space, advected by the
@@ -309,7 +336,10 @@ renders **byte-identical** with the flash on and off (that is what pins "no
 leakage into the normal front"), one isolated fresh ignition differs and agrees
 again at t = 12 s, and the flash shows on every view.
 
-### G. Renderer seam: WebGL2 `IRenderer` (perf, large, optional)
+### G. Renderer seam: WebGL2 `IRenderer` (perf, large, optional) — NOT NEEDED YET
+After A–C and the per-view colour cache, the dearest view at 512² is terrain at
+6.6 ms/frame inside a 12.4 ms render budget, so nothing is asking for this. It
+stays written down for 1024²+ or for whatever a future view costs.
 Only if A–C are not enough at 512²+. Upload the layers as textures (`fire`,
 `fuel`, `moisture`, `crown`, `intensity`, `elevation`, `retardant`, `windU/V`)
 each frame and port `cellRGB`/glow/smoke to a fragment shader. Keep
@@ -317,12 +347,38 @@ each frame and port `cellRGB`/glow/smoke to a fragment shader. Keep
 `?renderer=gl` switch. Verify by diffing a GL frame read back with
 `gl.readPixels` against `renderRGBA` (tolerance ±3 per channel).
 
-### H. Odds and ends
-- `tools/profile.ts`: add `--size` (see C/D) and print a "budget" line: at 60 fps
-  and the preset's `timeScale`, how many ms are left.
-- HUD: show `Contours` and `Smoke` toggles under View; persist toggles in the URL
-  (`?smoke=0&wind=1`) so a shared link reproduces the view.
-- `index.html` footer: replace the colour hints (now in the legend) with the
-  three interaction hints only.
+### H. Odds and ends — ✅ LANDED (except the stray file, which is the owner's)
+- `tools/profile.ts`: `--size` was already there; it now also prints a **budget**
+  line. The browser paces by wall clock, so a preset at `timeScale` sim-seconds
+  per real second owes `timeScale/60` steps in every 16.67 ms frame — the sim's
+  share is set by the speed the scenario asks for, not by the step cost alone.
+  The line prints what that leaves and each view is marked `ok` / `OVER by x` against it.
+- HUD: `Smoke` was already a toggle; `Contours` is new. It could not simply
+  rebuild the shading (that recomputes hillshade over the whole map on a click),
+  so `TerrainCache` keeps a **second** lighting array with the contour factor left
+  out and the frame loop picks one of the two once per frame — no per-cell branch.
+  Two arrays rather than a mask is also what keeps "contours on" bit-identical:
+  `Float32Array` stores round, so darkening a stored shade at use time is a
+  different number from darkening it before the store, and every contour cell
+  could shift a byte. A toggle is a cold start for the colour cache, like a view switch.
+- View state persists in the URL: `?view=`, `?wind=`, `?smoke=0`, `?flash=0`,
+  `?contours=0` (defaults deleted, not written, so a plain URL stays plain), and a
+  scenario switch carries them and `?size=` across its reload. `replaceState`,
+  never `assign` — a reload would rebuild the world and restart the fire. The HUD
+  takes a starting state and reports changes; `main.ts` is the only thing that
+  touches the address bar.
+- `index.html` footer: down to the three interaction hints.
 - The stray zero-byte file `=` in the repo root (from a shell redirect accident,
   untracked) should be deleted by the repo owner.
+
+**How the render work was verified.** The per-view cache and the contours toggle
+are pure-performance refactors that must be pixel-identical, and nothing in
+`tests/` asserts render output. Both were checked with a throwaway byte-diff
+(kept out of the repo, under `M:\claud_projects\temp\outdoorfire-item-d\`): a
+copy of `palette.ts` from before this pass is dropped into `src/render/` as a
+second module, and every preset is rendered through both — 4 presets × 256/384 ×
+all 6 views × two passes (so the view-switch path runs) × smoke on/off × 12 *warm*
+frames, i.e. long enough that every one of the 8 row bands has been rewritten.
+2304 frame comparisons, 0 mismatches, run once after each change. Do the same for
+any future change to the cached composition; the profiler tells you it got
+faster and nothing tells you it is still right.
