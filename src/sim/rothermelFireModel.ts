@@ -53,15 +53,15 @@ import {
  * and the fire comes out too narrow (`docs/plans/phase-8-elliptical-spread.md`
  * §"Defect 2"). 26.57° lands close to it.
  */
-const NX = [-1, 0, 1, -1, 1, -1, 0, 1, /* knights: */ -1, 1, -2, 2, -2, 2, -1, 1];
-const NY = [-1, -1, -1, 0, 0, 1, 1, 1, /* knights: */ -2, -2, -1, -1, 1, 1, 2, 2];
+export const NX = [-1, 0, 1, -1, 1, -1, 0, 1, /* knights: */ -1, 1, -2, 2, -2, 2, -1, 1];
+export const NY = [-1, -1, -1, 0, 0, 1, 1, 1, /* knights: */ -2, -2, -1, -1, 1, 1, 2, 2];
 const SQRT5 = Math.sqrt(5);
-const NDIST = [
+export const NDIST = [
   Math.SQRT2, 1, Math.SQRT2, 1, 1, Math.SQRT2, 1, Math.SQRT2,
   SQRT5, SQRT5, SQRT5, SQRT5, SQRT5, SQRT5, SQRT5, SQRT5,
 ];
 /** Index of the first knight offset in {@link NX}/{@link NY}. */
-const FIRST_KNIGHT = 8;
+export const FIRST_KNIGHT = 8;
 
 /**
  * Which `progress` accumulator each ray feeds. See {@link SpreadTemplate} for why
@@ -92,10 +92,10 @@ const MAX_CLASSES = 16;
  * destination, so if those two are on the map the intermediates are too — no
  * bounds check is needed on them.
  */
-const MID1X = [0, 0, 0, 0, 0, 0, 0, 0, /* knights: */ 0, 0, -1, 1, -1, 1, 0, 0];
-const MID1Y = [0, 0, 0, 0, 0, 0, 0, 0, /* knights: */ -1, -1, 0, 0, 0, 0, 1, 1];
-const MID2X = [0, 0, 0, 0, 0, 0, 0, 0, /* knights: */ -1, 1, -1, 1, -1, 1, -1, 1];
-const MID2Y = [0, 0, 0, 0, 0, 0, 0, 0, /* knights: */ -1, -1, -1, -1, 1, 1, 1, 1];
+export const MID1X = [0, 0, 0, 0, 0, 0, 0, 0, /* knights: */ 0, 0, -1, 1, -1, 1, 0, 0];
+export const MID1Y = [0, 0, 0, 0, 0, 0, 0, 0, /* knights: */ -1, -1, 0, 0, 0, 0, 1, 1];
+export const MID2X = [0, 0, 0, 0, 0, 0, 0, 0, /* knights: */ -1, 1, -1, 1, -1, 1, -1, 1];
+export const MID2Y = [0, 0, 0, 0, 0, 0, 0, 0, /* knights: */ -1, -1, -1, -1, 1, 1, 1, 1];
 
 /** Default live-fuel moisture [fraction] — 100%, a green-but-not-peak baseline. */
 const DEFAULT_LIVE_MOISTURE = 1.0;
@@ -122,10 +122,13 @@ export type WindReference = 'midflame' | 'open';
  *    `R(θ) = R_head·(1−E)/(1−E·cos θ)` (Anderson 1983 length-to-breadth,
  *    BehavePlus `SurfaceFire::calculateSpreadRateAtVector`). This is what
  *    operational fire science computes; see `src/sim/fireEllipse.ts`.
- *  - `'perDirection'`: the Phase-2 law — project the wind onto each neighbour
- *    ray and run Rothermel with that reduced wind, combining wind and slope per
- *    ray. Kept because it is what the Phase-2..7 tests were authored against and
- *    it makes the two laws byte-comparable, but it is **not** in any source: it
+ *  - `'perDirection'`: the Phase-2 *directional* law — project the wind onto each
+ *    neighbour ray and run Rothermel with that reduced wind, combining wind and
+ *    slope per ray. Note this is only half of the Phase-2 model: it still runs on
+ *    whatever {@link SpreadTemplate} is mounted, so reproducing Phase 2 proper
+ *    needs `spreadTemplate: 'ring8'` as well. Kept because it is what the
+ *    Phase-2..7 tests were authored against and it makes the two laws
+ *    byte-comparable, but it is **not** in any source: it
  *    hands every direction more than 90° off the wind the full no-wind R₀, so a
  *    fire backs into the wind far too eagerly.
  */

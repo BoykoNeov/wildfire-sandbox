@@ -133,7 +133,7 @@ Phase 7 — longer, much slower at the back, and **wider at the flanks** (the fl
 rate is 4–6× R₀, not R₀). One Rothermel evaluation per cell replaces eight.
 `spreadShape: 'perDirection'` restores the Phase-2 law. →
 **P8b 16-ray template** ✅ (same plan doc, §"Phase 8b"; reverses that plan's own
-"keep the 8-neighbour template" decision at the user's direction): the front now
+"keep the 8-neighbour template" decision): the front now
 travels along 16 rays, the 8-ring plus the eight knight moves at ±26.57°/±63.43°,
 which land near the spread ellipse's widest point. Two things came with it.
 **Every knight move tests the two cells it steps over** — a √5 step would

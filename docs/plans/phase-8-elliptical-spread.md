@@ -256,8 +256,7 @@ Two new shape tests, plus the existing gates:
 # Phase 8b — the 16-ray template
 
 > **Status: SHIPPED.** Reverses the "keep the 8-neighbour template" decision
-> above, at the user's direction. Defect 2 (the 8-ray hull) is now narrowed, not
-> merely measured.
+> above. Defect 2 (the 8-ray hull) is now narrowed, not merely measured.
 
 `spreadTemplate?: 'ring8' | 'template16'` — default `'template16'`. One axis, two
 coherent laws, exactly as `spreadShape` is: the template and the accumulator that

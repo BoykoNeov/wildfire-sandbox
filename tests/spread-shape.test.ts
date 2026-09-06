@@ -2,7 +2,19 @@ import { describe, it, expect } from 'vitest';
 import { createWorld, FireState, type WorldState } from '../src/core/world';
 import { Simulation } from '../src/core/simulation';
 import { Anderson13FuelModel, ANDERSON_13, fuelBed } from '../src/sim/anderson13';
-import { RothermelFireModel, type SpreadShape, type SpreadTemplate } from '../src/sim/rothermelFireModel';
+import {
+  FIRST_KNIGHT,
+  MID1X,
+  MID1Y,
+  MID2X,
+  MID2Y,
+  NDIST,
+  NX,
+  NY,
+  RothermelFireModel,
+  type SpreadShape,
+  type SpreadTemplate,
+} from '../src/sim/rothermelFireModel';
 import { prepareFuelBed, windFactorFrom, ftPerMinToMetersPerSec, metersPerSecToFtPerMin } from '../src/sim/rothermel';
 import {
   FT_PER_MIN_TO_MPH,
@@ -108,6 +120,75 @@ function radiusProfile(world: WorldState): number[] {
   for (let k = 0; k <= 8; k++) out.push(radiusAlong(world, (k * Math.PI) / 16));
   return out;
 }
+
+describe('the knight-move tables are self-consistent', () => {
+  // The one place in Phase 8b where a typo produces *plausible* fire rather than
+  // a crash. `MID1*`/`MID2*` are the two cells each √5 ray steps over, and the
+  // fire model reads them as raw index deltas off the destination with **no
+  // bounds check** — safe only because both intermediates lie inside the
+  // source/destination bounding box. That is a property of the tables agreeing
+  // with `NX`/`NY` entry by entry, which nothing else asserts. Re-derived here
+  // from the geometry rather than copied from the source.
+  it('every √5 ray steps over two cells strictly inside its own bounding box', () => {
+    for (let n = FIRST_KNIGHT; n < NX.length; n++) {
+      const dx = NX[n];
+      const dy = NY[n];
+      // A knight move: one axis 2, the other 1, so the distance really is √5.
+      expect(Math.abs(dx) + Math.abs(dy)).toBe(3);
+      expect(Math.max(Math.abs(dx), Math.abs(dy))).toBe(2);
+      expect(NDIST[n]).toBeCloseTo(Math.sqrt(5), 12);
+
+      const sx = Math.sign(dx);
+      const sy = Math.sign(dy);
+      // Supercover of the segment from (dx, dy) to the origin: the long axis
+      // steps first, so the far intermediate keeps the long axis' sign and zeroes
+      // the short one — (sgn dx, 0) for a long-x move, (0, sgn dy) for a long-y.
+      const [m1x, m1y] = Math.abs(dx) === 2 ? [sx, 0] : [0, sy];
+      expect([MID1X[n], MID1Y[n]]).toEqual([m1x, m1y]);
+      expect([MID2X[n], MID2Y[n]]).toEqual([sx, sy]);
+
+      // …and both lie inside the box spanned by source and destination, which is
+      // exactly what lets the fire model skip the bounds check on them.
+      for (const [mx, my] of [[MID1X[n], MID1Y[n]], [MID2X[n], MID2Y[n]]]) {
+        expect(Math.abs(mx)).toBeLessThanOrEqual(Math.abs(dx));
+        expect(Math.abs(my)).toBeLessThanOrEqual(Math.abs(dy));
+        expect(mx * dx).toBeGreaterThanOrEqual(0); // never on the far side
+        expect(my * dy).toBeGreaterThanOrEqual(0);
+        expect(mx === dx && my === dy).toBe(false); // never the source itself
+        expect(mx === 0 && my === 0).toBe(false); // never the destination
+      }
+    }
+  });
+
+  it('the front still crosses broken, mixed terrain (the gate is not a wall)', () => {
+    // The shape measurements all run on uniform fuel, and the containment tests
+    // use a full-height barrier — so the intermediate lookup is otherwise only
+    // ever exercised all-burnable or all-blocked. Scatter nonburnable cells and
+    // the fire must still spread: the gate closes individual long rays, it does
+    // not stop the front.
+    const size = 81;
+    const r0 = ftPerMinToMetersPerSec(testBed().rateOfSpreadNoWindSlope);
+    const world = pointIgnitionWorld(size, 4 * r0, 0, 0);
+    // ~11% of cells nonburnable (Anderson id 0), in a pattern with no straight
+    // line in it, so knight rays meet every mix of blocked/clear intermediates.
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        if ((x * 7 + y * 13) % 9 === 0 && !(x === (size >> 1) && y === (size >> 1))) {
+          world.layers.fuel.data[y * size + x] = 0;
+        }
+      }
+    }
+    run(world, 'elliptical', 120, 1);
+
+    let burned = 0;
+    for (const v of world.layers.fire.data) if (v !== FireState.Unburned) burned++;
+    expect(burned).toBeGreaterThan(200); // it spread through the gaps…
+    // …and never onto fuel that cannot carry it.
+    for (let i = 0; i < world.layers.fire.data.length; i++) {
+      if (world.layers.fuel.data[i] === 0) expect(world.layers.fire.data[i]).toBe(FireState.Unburned);
+    }
+  });
+});
 
 describe('spread shape — isotropy with no wind and no slope', () => {
   const dt = 1;
