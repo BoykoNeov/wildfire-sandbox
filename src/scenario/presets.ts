@@ -223,9 +223,9 @@ const lateSeasonCured = seasonUnit(
   'Late-season cured',
   0,
   'The same afternoon in the same place, months later. The grass has cured — down to 30 % moisture, ' +
-    'and what cured is no longer live fuel at all: it is transferred into the dead 1-hr class. The brush ' +
-    'is at its seasonal low. Same wind, same dead-fuel moisture, a far bigger fire. The live classes are ' +
-    'the whole difference.',
+    'and what cured is no longer live fuel at all: it joins the dead fuel, as its own coarse class rather ' +
+    'than as fine 1-hr litter. The brush is at its seasonal low. Same wind, same dead-fuel moisture, a far ' +
+    'bigger fire — and almost all of that is the live classes drying out, not the load that moved.',
 );
 
 /** All presets, in menu order. */

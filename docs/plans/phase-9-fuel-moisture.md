@@ -139,9 +139,29 @@ above. It is not implemented because the Anderson 13 models are static: transfer
 belongs to the Scott & Burgan 40 dynamic models, so adding it means adding a
 catalogue, not tweaking a formula. Recorded in `docs/science.md` §9.
 
+> **Superseded — Phase 9b did it, and two of the three claims above are wrong.**
+> The mechanic turned out to live entirely in bed assembly and needed no new
+> catalogue: `dynamicHerbLoad` is opt-in on the fire model, off by default.
+> Measuring it corrected the framing this section inherited. (a) The load does
+> *not* land in the 1-hr class — BehavePlus puts it in a fourth dead class at the
+> live-herb SAV (`loadDead_[3]`/`savrDead_[3]`), coarser than FM2's fine fuel, not
+> finer. (b) It is *not* the dominant effect in this catalogue, and it does not
+> even point the same way: on FM2 fully cured it takes R₀ to 0.957× and fireline
+> intensity to 0.841×, because moving a class between categories changes no
+> geometry — only which moisture of extinction damps it (FM2 dead M_x 15 %, live
+> M_x ≈ 1044 %). (c) What *is* still true is the catalogue point, now narrowed:
+> only FM2 carries live herbaceous load, so the mechanic has one model to bite on,
+> and it is Scott & Burgan's 40 that would make curing dominant. `docs/science.md`
+> §3c has the full account; §9 now defers the catalogue, not the mechanic.
+
 **A green-season preset.** Nothing in the shipped presets exercises a high
 greenness, so the spring-flush-vs-late-summer contrast is available to a scenario
 author but not demonstrated in the menu. A paired preset is the obvious follow-up.
+
+> **Done in Phase 9b:** `spring-green` / `late-season-cured` — one landscape, one
+> weather, one ignition, `greenness` the only field that differs, every band
+> carrying live fuel (FM2 grass / FM5 brush / FM10 timber). 2.34× the burned area
+> and 1.59× the mean fireline intensity at one hour.
 
 ## Where this leaves `docs/science.md` §9
 

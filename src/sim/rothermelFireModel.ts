@@ -249,13 +249,21 @@ export interface RothermelFireModelOptions {
    * `false` — the static Anderson 13 bed, byte-for-byte, so no existing scenario
    * moves.
    *
-   * This is the *dominant* half of curing: dead fine fuel is what carries fire,
-   * so moving load across the line does more than drying the live side does. In
-   * the Anderson 13 catalogue only **FM2** carries a live herbaceous load, so
+   * In the Anderson 13 catalogue only **FM2** carries a live herbaceous load, so
    * this knob is visible in FM2 and inert everywhere else; the standard models
    * are static by definition and the dynamic catalogue is Scott & Burgan's 40
    * (`docs/science.md` §9). It pairs with {@link greenness}: one season knob
    * drives both halves, because the transfer reads the moisture the season set.
+   *
+   * **It makes FM2 burn *less*, which is not the intuition.** Curing is widely
+   * described as the dominant half because dead fine fuel is what carries fire —
+   * true in the dynamic catalogue, false here. The transferred class arrives at
+   * the live-herb SAV (1500 for FM2, against its fine 3000), so it is not fine
+   * 1-hr litter, and moving it changes no geometry at all: same total load, same
+   * depth, same packing ratio, same characteristic SAV. All that changes is which
+   * moisture of extinction damps it, and FM2's dead M_x is 15 % against a live
+   * M_x near 1044 %. R₀ ×0.957, fireline intensity ×0.841 at full cure. See
+   * `docs/science.md` §3c.
    */
   dynamicHerbLoad?: boolean;
   /** See {@link WindReference}. Default `'midflame'`. */
@@ -397,6 +405,11 @@ export class RothermelFireModel implements IFireModel {
   // Flame residence time depends only on the fuel's dead bed SAV, so it is the
   // same for every cell of a given fuel id. Cache it per id instead of rebuilding
   // a fuel bed (an allocation) for every burning cell every tick.
+  // NOTE: `bedOptions` also feeds that bed (a cured herbaceous load transfer
+  // coarsens it), and those options are construction-time constants — which is
+  // the only reason a key of fuel id alone is still sound. Making the transfer or
+  // the coarse moistures *dynamic* would invalidate this cache and `bedCache`
+  // together.
   private readonly residenceSecById = new Map<number, number>();
   // Prepared-bed caches. A surface bed is a pure function of (fuel id, dead
   // moisture byte, scenario live moisture); the FM10 crown proxy of the moisture
