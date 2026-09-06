@@ -7,7 +7,13 @@ import { DynamicWeatherProvider } from '../src/sim/dynamicWeather';
 import { FuelMoistureSystem } from '../src/sim/fuelMoistureSystem';
 import { RothermelFireModel } from '../src/sim/rothermelFireModel';
 import { SpottingSystem } from '../src/sim/spottingSystem';
-import { loadScenario, type Scenario } from '../src/scenario/scenario';
+import {
+  loadScenario,
+  scaleScenario,
+  MIN_SCENARIO_SIZE,
+  MAX_SCENARIO_SIZE,
+  type Scenario,
+} from '../src/scenario/scenario';
 import { PRESETS, findPreset, DEFAULT_PRESET_ID } from '../src/scenario/presets';
 import { CrownFire } from '../src/sim/crownFire';
 
@@ -123,17 +129,7 @@ describe('loadScenario', () => {
  * only from the browser / exporter anyway).
  */
 function shrink(p: Scenario, size = 128): Scenario {
-  const k = size / p.width;
-  return {
-    ...p,
-    width: size,
-    height: Math.round(p.height * k),
-    ignitions:
-      p.ignitions === 'center'
-        ? 'center'
-        : p.ignitions.map((c) => ({ x: Math.round(c.x * k), y: Math.round(c.y * k) })),
-    agents: undefined,
-  };
+  return { ...scaleScenario(p, size), agents: undefined };
 }
 
 describe('presets', () => {
@@ -202,5 +198,98 @@ describe('presets', () => {
     l.sim.run(2400, 1); // through the rain
     expect(l.world.env.rainRate).toBeGreaterThan(0);
     expect(mean()).toBeGreaterThan(before + 20);
+  });
+});
+
+/**
+ * Phase-7 item D — `?size=` re-authors a preset for a bigger square map. The
+ * whole feature rests on one property of the terrain generator: it samples its
+ * value noise in *normalized* coordinates, so a seed draws the same landscape at
+ * any size. That is what makes scaling cell coordinates the correct (and
+ * sufficient) transform, and it is the first thing tested here.
+ */
+describe('scaleScenario', () => {
+  const preset = findPreset('grass-valley')!; // the one preset with a refill point
+
+  it('draws the same landscape at any size, which is why coordinates just scale', () => {
+    const small = createWorld({ width: 256, height: 256, seed: 4242 });
+    generateTerrain(small);
+    const big = createWorld({ width: 512, height: 512, seed: 4242 });
+    generateTerrain(big);
+    // Sample the whole map, not a lucky corner. `u = x/(width-1)` is a half-cell
+    // off between the two grids, so allow a few metres of a 0-1000 m range.
+    let worst = 0;
+    for (let y = 0; y < 256; y += 7) {
+      for (let x = 0; x < 256; x += 7) {
+        const a = small.layers.elevation.data[y * 256 + x];
+        const b = big.layers.elevation.data[2 * y * 512 + 2 * x];
+        worst = Math.max(worst, Math.abs(a - b));
+      }
+    }
+    expect(worst).toBeLessThan(20);
+  });
+
+  it('scales every authored cell coordinate, units included', () => {
+    const s = scaleScenario(preset, 512);
+    expect(s.width).toBe(512);
+    expect(s.height).toBe(512);
+    const src = preset.ignitions as { x: number; y: number }[];
+    expect(s.ignitions).toEqual(src.map((c) => ({ x: c.x * 2, y: c.y * 2 })));
+    expect(s.agents!.crew).toEqual({ x: preset.agents!.crew!.x * 2, y: preset.agents!.crew!.y * 2 });
+    const e = preset.agents!.engine!;
+    expect(s.agents!.engine).toMatchObject({
+      x: e.x * 2,
+      y: e.y * 2,
+      refillX: e.refillX! * 2,
+      refillY: e.refillY! * 2,
+    });
+    expect(s.agents!.aircraft).toMatchObject({
+      x: preset.agents!.aircraft!.x * 2,
+      y: preset.agents!.aircraft!.y * 2,
+    });
+  });
+
+  it('leaves everything that is not a cell coordinate alone', () => {
+    const s = scaleScenario(preset, 512);
+    expect(s.seed).toBe(preset.seed);
+    expect(s.cellSize).toBe(preset.cellSize); // a cell is still 30 m: MORE ground, not finer
+    expect(s.terrain).toEqual(preset.terrain);
+    expect(s.weather).toEqual(preset.weather);
+    expect(s.timeScale).toBe(preset.timeScale);
+    // Speeds are cells/second and drop radii are cells, so at an unchanged cell
+    // size they already mean the same thing — they must NOT be rescaled.
+    expect(s.agents!.engine!.speed).toBe(preset.agents!.engine!.speed);
+    expect(s.agents!.aircraft!.dropRadius).toBe(preset.agents!.aircraft!.dropRadius);
+  });
+
+  it('is the identity at the authored size, and keeps `center` central', () => {
+    expect(scaleScenario(preset, preset.width)).toBe(preset);
+    const centred = scaleScenario(findPreset('shifting-winds')!, 384);
+    expect(centred.ignitions).toBe('center');
+    expect(centred.agents!.crew).toBeDefined();
+  });
+
+  it('keeps scaled points inside the map, and survives a preset with no units', () => {
+    const edge: Scenario = {
+      ...preset,
+      ignitions: [{ x: 255, y: 255 }],
+      agents: undefined,
+    };
+    const s = scaleScenario(edge, MIN_SCENARIO_SIZE);
+    expect(s.agents).toBeUndefined();
+    const [c] = s.ignitions as { x: number; y: number }[];
+    expect(c.x).toBeLessThan(MIN_SCENARIO_SIZE);
+    expect(c.y).toBeLessThan(MIN_SCENARIO_SIZE);
+    expect(MAX_SCENARIO_SIZE).toBeGreaterThan(MIN_SCENARIO_SIZE);
+  });
+
+  it('loads and burns on the bigger map', { timeout: 30000 }, () => {
+    const l = loadScenario(scaleScenario(shrink(preset, 96), 192));
+    expect(l.world.width).toBe(192);
+    l.sim.run(1200, 1);
+    let burned = 0;
+    const f = l.world.layers.fire.data;
+    for (let i = 0; i < f.length; i++) if (f[i] !== FireState.Unburned) burned++;
+    expect(burned).toBeGreaterThan(50);
   });
 });

@@ -157,3 +157,57 @@ export function loadScenario(s: Scenario): LoadedScenario {
 
   return { scenario: s, world, sim, systems, fuel, crew, engine, aircraft, burnableCells };
 }
+
+/** Smallest / largest square map `scaleScenario` will re-author a preset to. */
+export const MIN_SCENARIO_SIZE = 64;
+export const MAX_SCENARIO_SIZE = 1024;
+
+/**
+ * Re-author a scenario for a square map `size` cells a side (Phase-7 item D —
+ * the browser's `?size=` switch). Returns `s` unchanged when it is already that
+ * size, so 256 stays byte-for-byte the authored preset.
+ *
+ * **Why scaling the cell coordinates is enough.** `generateTerrain` samples its
+ * value noise in *normalized* coordinates (`u = x/(width-1)`, against noise
+ * grids of a fixed 4/8/16/32) — so a seed draws the same landscape at any map
+ * size, just resolved more finely. An ignition point or a unit start authored at
+ * 256 therefore lands on the same hillside once multiplied by `size/256`, and no
+ * preset has to be re-authored. Points are clamped inside the map, and
+ * `igniteNearestBurnable` still moves an ignition that lands on water or rock.
+ *
+ * **`cellSize` is deliberately NOT scaled**, so a bigger map is more *ground*:
+ * 512 cells at 30 m is 15.4 km across, four times the area of the 256 default.
+ * The trade is that the generator's fixed 0–1000 m relief now spans twice the
+ * distance, so slopes come out about half as steep — a 512 run is a gentler
+ * landscape as well as a wider one. Everything else carries over untouched
+ * because a cell still means 30 m: unit speeds are cells/second and drop
+ * footprints are radii in cells, so both keep their physical meaning.
+ */
+export function scaleScenario(s: Scenario, size: number): Scenario {
+  if (size === s.width && size === s.height) return s;
+  const fx = size / s.width;
+  const fy = size / s.height;
+  const cx = (x: number): number => Math.min(size - 1, Math.max(0, Math.round(x * fx)));
+  const cy = (y: number): number => Math.min(size - 1, Math.max(0, Math.round(y * fy)));
+  const a = s.agents;
+  return {
+    ...s,
+    width: size,
+    height: size,
+    ignitions:
+      s.ignitions === 'center' ? 'center' : s.ignitions.map((p) => ({ x: cx(p.x), y: cy(p.y) })),
+    agents: a && {
+      crew: a.crew && { x: cx(a.crew.x), y: cy(a.crew.y) },
+      engine: a.engine && {
+        ...a.engine,
+        x: cx(a.engine.x),
+        y: cy(a.engine.y),
+        // The refill point defaults to the start cell when omitted; keep it that
+        // way rather than pinning it to a scaled 0.
+        refillX: a.engine.refillX === undefined ? undefined : cx(a.engine.refillX),
+        refillY: a.engine.refillY === undefined ? undefined : cy(a.engine.refillY),
+      },
+      aircraft: a.aircraft && { ...a.aircraft, x: cx(a.aircraft.x), y: cy(a.aircraft.y) },
+    },
+  };
+}

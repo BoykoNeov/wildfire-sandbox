@@ -8,7 +8,12 @@ import {
 } from './render/overlay';
 import { TerrainEditor } from './editor/terrainEditor';
 import { SuppressionCommand } from './editor/suppressionCommand';
-import { loadScenario } from './scenario/scenario';
+import {
+  loadScenario,
+  scaleScenario,
+  MIN_SCENARIO_SIZE,
+  MAX_SCENARIO_SIZE,
+} from './scenario/scenario';
 import { findPreset, DEFAULT_PRESET_ID, PRESETS } from './scenario/presets';
 import { computeStats, emptyStats } from './sim/stats';
 import { Hud } from './ui/hud';
@@ -19,8 +24,19 @@ const DT = 1; // seconds of simulated time per step
 // default is the shifting-winds demo. `loadScenario` is the single pipeline
 // builder shared with the headless exporter, so the browser and `npm run frame`
 // can never drift apart (Phase-5 plan decision #4).
+// `?size=N` re-authors that preset for a square map N cells a side (the preset's
+// own size, 256, is the default). The terrain generator samples in normalized
+// coordinates, so it is the same landscape with more ground under it — see
+// `scaleScenario` for what that costs in slope.
 const params = new URLSearchParams(window.location.search);
-const preset = findPreset(params.get('scenario') ?? DEFAULT_PRESET_ID) ?? findPreset(DEFAULT_PRESET_ID)!;
+const authored = findPreset(params.get('scenario') ?? DEFAULT_PRESET_ID) ?? findPreset(DEFAULT_PRESET_ID)!;
+const requested = Number(params.get('size'));
+const preset = Number.isFinite(requested) && requested > 0
+  ? scaleScenario(
+      authored,
+      Math.round(Math.min(MAX_SCENARIO_SIZE, Math.max(MIN_SCENARIO_SIZE, requested))),
+    )
+  : authored;
 const loaded = loadScenario(preset);
 const { world, sim, crew, engine, aircraft, burnableCells } = loaded;
 

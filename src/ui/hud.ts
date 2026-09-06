@@ -151,6 +151,15 @@ export class Hud {
     desc.className = 'desc';
     desc.textContent = current.description;
     sc.appendChild(desc);
+    // The map size is a URL switch (`?size=`), so say what you are actually
+    // looking at — and in kilometres, since cells only mean something at 30 m.
+    const dims = document.createElement('div');
+    dims.className = 'desc';
+    const cellM = current.cellSize ?? 30;
+    dims.textContent =
+      `${current.width}×${current.height} cells · ` +
+      `${((current.width * cellM) / 1000).toFixed(1)} km across (${cellM} m cells)`;
+    sc.appendChild(dims);
     this.root.appendChild(sc);
 
     // --- controls ---------------------------------------------------------
