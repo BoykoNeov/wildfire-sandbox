@@ -37,7 +37,26 @@ maximum spread. Everything else comes from an ellipse.
 | Crown coupling | Evaluated **per direction** off the direction's own elliptical intensity, so a fire can crown at the head and stay a surface fire on the flanks. The FM10 proxy rate rides its own (rounder) crown ellipse about the same head direction. |
 | Expect wider fires, not just longer ones | Every dimension of the ellipse scales with `R_head`, so the flank rate `R_head·(1−E)` comes out at **4–6× R₀** for a 2–3 m/s midflame wind. That is the model, not a bug: Anderson's LB is fitted to *observed* fire shapes, in which a wind-driven fire's flanks outrun a windless fire. Before Phase 8 the flanks were pinned at R₀ and the shape barely responded to wind at all. |
 | Cross-checks | `tests/spread-shape.test.ts` — measured length-to-breadth against the analytic LB, measured backing/heading against `(1−E)/(1+E)`, and the no-wind degenerate case (`E = 0 ⇒ R(θ) = R₀`) matching the old per-direction law exactly. |
+| Which directions exist | This law gives `R` for *any* θ; the raster can only travel along the sixteen rays of §1b, so how faithfully the burned region reproduces the ellipse is a separate question, answered there. |
 | Escape hatch | `spreadShape: 'perDirection'` restores the Phase-2 law (project the wind onto each ray). Kept for comparison; it is not in any source and lets a fire back into the wind at the full no-wind R₀. |
+
+## 1b. Propagation — the 16-ray template and its arrival accumulators
+
+§1a says how fast the front goes in a given direction. This says which directions
+exist, and how a cell decides it has been reached.
+
+| | |
+|---|---|
+| Module | `src/sim/rothermelFireModel.ts` (`SpreadTemplate`, `collectCandidates`) |
+| Template | 16 rays: the 8-ring (distance 1 and √2) plus the eight knight moves at ±26.57° / ±63.43° (distance √5). The knight rays exist because the spread ellipse's widest point sits ~18° off the head — *between* the 8-ring's 0° and 45° rays — so an 8-ray hull cut that corner and the fire came out too narrow. |
+| Arrival rule | **One accumulator per ray.** Ray *n* advances by `R(θ_n)/(d_n·cellSize)` each tick and the cell ignites on the first ray whose integral reaches 1. That makes the front a shortest path over the 16-ray graph, which is what a finer angular template is worth anything to. Sharing one accumulator across rays (the Phase-2 law) double-counts a ray against itself-via-a-shorter-path and, with a √5 ray present, runs the fire **1.45× too fast**. Same family as Finney's minimum-travel-time raster template, and Dijkstra-shaped for the same reason. |
+| Why not plain arrival times | `t_i = min(t_n + d/R)` is one float per cell instead of sixteen, but it is equivalent only at constant rates: it re-extrapolates from the neighbour's ignition time each tick, so a cell part-way across when the wind drops loses the progress it had invested. The accumulator integrates history, and dynamic wind (§8) is mounted in the presets. |
+| Long moves cannot hop a line | A √5 step is the only move that clears ground — it passes *over* two cells without touching either as a neighbour. Both of them must be **burnable** or the ray is unavailable. Those two cells are the segment's supercover ((1, 0) and (1, 1) for a (2, 1) source), so any nonburnable barrier between source and destination must occupy one of {source, mid1, mid2, destination}: a knight move can never cross a barrier an 8-neighbour front could not, and the Phase-4 one-cell containment line still holds. The test is on **fuel, not fire state** — burnt-over ground was burnable fuel, and retardant re-pins moisture rather than fuel, so a drop slows a long ray without blocking it. |
+| Candidate scan | Every cell within Chebyshev reach 2 of an ignited cell, via a separable dilation whose two passes are **sliding running sums** (one add and one subtract per cell), so the cost does not grow with the radius. The band is 5 cells wide instead of 3: mean candidates 955 → 1500 on `timber-crown-run` at 256². |
+| Measured shape | Windless, ideal radius 25 cells: the fire is **inscribed** — 1.000 / 0.940 / 0.960 / 0.960 / 0.920 at 0 / 11.25 / 22.5 / 33.75 / 45°, max/min 1.087. Under wind, length-to-breadth error against Anderson: +4 / +3 / +7 / +8 / +12 / +4 / +28 % at 1 / 1.5 / 2 / 2.5 / 3 / 4 / 5 m/s, against the 8-ring's +4 / +3 / +7 / +8 / +12 / **+39** / **+61** %. Identical below 3 m/s; the whole gain is at LB > 2.4, and both stay narrow-biased (they understate burned area). |
+| Cost | 16 `Float32` accumulators per cell: 4 MB at 256², 17 MB at 512², 67 MB at `?size=1024`. `fire:rothermel` runs 1.53 ms/step on `timber-crown-run` at 256² against the 8-ring's 0.91; the whole sim is 1.43 ms/step of a 16.67 ms frame. |
+| Cross-checks | `tests/spread-shape.test.ts` (overspeed guard — no direction may exceed the ideal windless radius; isotropy; the LB gate at 5 m/s), `tests/spread-ros.test.ts` (the planar front still runs at the analytic Rothermel rate), `tests/suppression.test.ts` (a **one**-cell cut line holds, and a one-cell gap in it leaks) |
+| Escape hatch | `spreadTemplate: 'ring8'` restores the Phase-2..8 law — 8 rays, one accumulator — **byte-for-byte**, verified against the pre-Phase-8b build on three presets. Kept because every earlier measured number in this document was taken against it, and because it is what `CaFireModel` still uses. |
 
 ## 2. Fuel — Anderson 13 (1982)
 
@@ -112,28 +131,34 @@ upslope only.
 
 ## 9. What is *not* modelled (and why)
 
-- **A smooth wavefront.** The *directional law* is now elliptical (§1a), but
-  **propagation** is still an 8-neighbour arrival-time CA, so the burned region
-  is the convex polygon spanned by eight rays rather than a smooth curve. Two
-  measured consequences (`tests/spread-shape.test.ts`,
-  `docs/plans/phase-8-elliptical-spread.md`):
-  - *Windless:* the fire is a rounded square, +8.9 % on the diagonals and −5.9 %
-    at 11.25°, about 1.16 max/min. (Not the textbook weighted-8 octagon: the
-    progress accumulator beats the graph shortest path on the diagonals, because
-    a cell accumulating from its diagonal predecessor switches to the faster
-    cardinal rate as soon as that neighbour ignites.)
-  - *Windy:* the ellipse's widest point sits ~18° off the head, between the 0°
-    and 45° rays, so the hull cuts the corner and the fire comes out too narrow.
-    Measured length-to-breadth runs +3–12 % high up to LB ≈ 2, +39 % at LB 2.5
-    and +61 % at LB 3.2. The head (a cardinal ray) and the backing rate are
-    accurate; the error is all flank width, and it *understates* burned area.
-  The named next step is a **16-neighbour template** (adding the ±26.57° / ±63.43°
-  knight moves, weights 1/√2/√5). It is not done because a √5 move steps *over* a
-  1-cell containment line, which would silently break the Phase-4 suppression
-  doctrine unless every long move also tested its intermediate cells for
-  burnability — and it widens the candidate dilation from 3×3 to 5×5, growing the
-  per-tick candidate list. FARSITE-style Huygens expansion (marker points rather
-  than a raster) remains a later fire model behind the same seam (handoff §4.2).
+- **A smooth wavefront.** The *directional law* is elliptical (§1a) and
+  *propagation* is now a 16-ray shortest path (§1b), but it is still a raster of
+  finitely many rays, so the burned region is a 16-gon inscribed in the true
+  shape rather than a smooth curve. Two measured consequences
+  (`tests/spread-shape.test.ts`, `docs/plans/phase-8-elliptical-spread.md`):
+  - *Windless:* a rounded 16-gon, 1.000 / 0.940 / 0.960 / 0.960 / 0.920 of the
+    due-east radius at 0 / 11.25 / 22.5 / 33.75 / 45°, about 1.09 max/min. Every
+    direction is at or **inside** the true circle. What is left is per-tick
+    quantization rather than the graph metric: a cell fires on the tick its
+    accumulator passes 1, so a ray whose crossing time is not a whole number of
+    ticks always fires a little late.
+  - *Windy:* measured length-to-breadth runs +3–12 % high up to LB ≈ 2, +4 % at
+    LB 2.5 and +28 % at LB 3.2. The head (a ray) and the backing rate are
+    accurate; the error is flank width, and it *understates* burned area.
+  Before Phase 8b, with the 8-ray template, the same figures were 1.17 max/min
+  windless — including a 10 % *overshoot* on the diagonals — and +39 % / +61 % at
+  LB 2.5 / 3.2. `spreadTemplate: 'ring8'` still reproduces all of that
+  byte-for-byte.
+  A 32-ray template would keep shrinking the polygon defect at 4 floats per cell
+  per added ray, with the same supercover gate on every long move; the honest
+  next step is instead **FARSITE-style Huygens expansion** — marker points on the
+  perimeter rather than a raster — which is a later fire model behind the same
+  seam (handoff §4.2), not a wider stencil.
+- **A one-cell *diagonal* barrier.** A nonburnable line laid corner-to-corner is
+  leaked through by the √2 rays, because two cells meeting at a corner do not
+  separate the plane and the diagonal rays are not supercover-gated (only the √5
+  ones are — §1b). Pre-Phase-8b behaviour, unchanged; a line one cell wide in the
+  cardinal sense holds against every ray in the template.
 - **Rothermel's effective wind-speed limit.** BehavePlus optionally caps the
   effective wind at `0.9·I_R` (`SurfaceFire::calculateWindSpeedLimit`), which
   also clamps φ_s. Not applied here: it is a Rothermel-domain constraint on the

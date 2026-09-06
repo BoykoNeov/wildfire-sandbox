@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { createWorld, FireState, type WorldState } from '../src/core/world';
 import { Simulation } from '../src/core/simulation';
 import { Anderson13FuelModel, ANDERSON_13, fuelBed } from '../src/sim/anderson13';
-import { RothermelFireModel, type SpreadShape } from '../src/sim/rothermelFireModel';
+import { RothermelFireModel, type SpreadShape, type SpreadTemplate } from '../src/sim/rothermelFireModel';
 import { prepareFuelBed, windFactorFrom, ftPerMinToMetersPerSec, metersPerSecToFtPerMin } from '../src/sim/rothermel';
 import {
   FT_PER_MIN_TO_MPH,
@@ -17,13 +17,18 @@ import { byteToFraction } from '../src/core/moisture';
  * *shape* a point ignition burns, as opposed to `spread-ros.test.ts`, which
  * pins the *speed* of a planar front.
  *
- * Two separate things are measured, because two separate things were wrong:
- *  - **isotropy** — with no wind and no slope the fire should be a circle. It is
- *    an octagon, and this test pins how far off (the grid metric, defect 2 in
- *    the plan: deliberately not fixed).
+ * Three separate things are measured, because three separate things were wrong:
  *  - **aspect** — under a steady wind the fire should be an ellipse whose
- *    length-to-breadth ratio is Anderson (1983)'s. That is defect 1, the one
- *    this phase fixes.
+ *    length-to-breadth ratio is Anderson (1983)'s. Defect 1, fixed in Phase 8 by
+ *    the elliptical directional law.
+ *  - **isotropy** — with no wind and no slope the fire should be a circle. The
+ *    raster can only be a polygon; these pin how far off. Defect 2, narrowed in
+ *    Phase 8b by the 16-ray template.
+ *  - **speed** — none of the above may make the fire *faster*. A 16-ray template
+ *    on the Phase-2 single accumulator runs 1.45× too fast (see
+ *    {@link SpreadTemplate}), which is why the accumulators are now per-ray, and
+ *    why the windless radii below are asserted in absolute cells and not only as
+ *    ratios. `spread-ros.test.ts` pins the same property for a planar front.
  */
 
 const FM = 1; // FM1 short grass — a clean single-class dead bed, fast enough to run far.
@@ -86,8 +91,15 @@ function extents(world: WorldState): { head: number; back: number; halfWidth: nu
   return { head, back, halfWidth };
 }
 
-function run(world: WorldState, shape: SpreadShape, steps: number, dt: number): void {
-  new Simulation(world, [new RothermelFireModel(new Anderson13FuelModel(), { spreadShape: shape })]).run(steps, dt);
+function run(
+  world: WorldState,
+  shape: SpreadShape,
+  steps: number,
+  dt: number,
+  spreadTemplate: SpreadTemplate = 'template16',
+): void {
+  const model = new RothermelFireModel(new Anderson13FuelModel(), { spreadShape: shape, spreadTemplate });
+  new Simulation(world, [model]).run(steps, dt);
 }
 
 /** Burn radius, in cells, at nine angles from due east to due north. */
@@ -102,10 +114,10 @@ describe('spread shape — isotropy with no wind and no slope', () => {
   const ticksPerCell = 4;
   const steps = 100; // ideal radius = 25 cells
 
-  function windlessProfile(shape: SpreadShape): number[] {
+  function windlessProfile(shape: SpreadShape, template: SpreadTemplate = 'template16'): number[] {
     const r0 = ftPerMinToMetersPerSec(testBed().rateOfSpreadNoWindSlope);
     const world = pointIgnitionWorld(121, ticksPerCell * dt * r0, 0, 0);
-    run(world, shape, steps, dt);
+    run(world, shape, steps, dt, template);
     return radiusProfile(world);
   }
 
@@ -117,26 +129,57 @@ describe('spread shape — isotropy with no wind and no slope', () => {
     expect(windlessProfile('elliptical')).toEqual(windlessProfile('perDirection'));
   });
 
-  it('is anisotropic by ~16%: a rounded square bulging on the diagonals', () => {
+  it('never outruns R₀ in any direction — the 16-ray overspeed guard', () => {
+    // THE regression this test file exists for since Phase 8b. The ideal windless
+    // radius is exactly `steps / ticksPerCell` = 25 cells: the fire spreads at R₀
+    // and nothing may make it faster. Bolting the knight rays onto the Phase-2
+    // *single* accumulator does exactly that — a cell picks up credit from its
+    // knight neighbour two columns back (which lights a whole crossing-period
+    // early, at 1/√5 of the cardinal rate) and then adds the cardinal rate on top,
+    // landing at 1/(1 + 1/√5) = 0.69 of the correct crossing time. Measured then:
+    // radii of 33–36 cells, i.e. +32 % to +44 %. Per-ray accumulators are what
+    // make the front a shortest path again, and this is the assertion that says
+    // so. See {@link SpreadTemplate}.
+    const ideal = steps / ticksPerCell; // 25
+    for (const template of ['ring8', 'template16'] as const) {
+      const profile = windlessProfile('elliptical', template);
+      expect(Math.max(...profile)).toBeLessThanOrEqual(ideal * 1.12);
+      expect(profile[0]).toBeGreaterThan(ideal * 0.95); // …and it really did run
+    }
+    // The 16-ray front is *inscribed*: it reaches R₀·t on the rays and falls short
+    // between them, never past. The 8-ring alone is not — its diagonal overshoots
+    // by 10 % (27.5 cells against the ideal 25), the accumulator artefact this
+    // file has documented since Phase 8.
+    expect(Math.max(...windlessProfile('elliptical', 'template16'))).toBeLessThanOrEqual(ideal);
+    expect(Math.max(...windlessProfile('elliptical', 'ring8'))).toBeGreaterThan(ideal);
+  });
+
+  it('is a 16-gon inscribed in the circle: ~9% anisotropy, down from ~17%', () => {
     const profile = windlessProfile('elliptical');
     const east = profile[0];
     expect(east).toBeGreaterThan(20); // the fire actually ran
 
-    // Measured (plan §"Defect 2"): 1.000 / 0.941 / 0.960 / 1.020 / 1.089 at
-    // 0 / 11.25 / 22.5 / 33.75 / 45°. This is NOT the textbook weighted-8
-    // octagon (exact on the rays, 92.4% at 22.5°): the `progress` accumulator
-    // beats the graph shortest path on the diagonals, because a cell that has
-    // been accumulating from its diagonal predecessor switches to the faster
-    // cardinal rate the moment its cardinal neighbour ignites. The front is
-    // therefore long on the diagonals and short at 11.25°.
+    // Measured at 0 / 11.25 / 22.5 / 33.75 / 45°, relative to due east:
+    //   16 rays: 1.000 / 0.940 / 0.960 / 0.960 / 0.920   (max/min 1.087)
+    //    8 rays: 1.000 / 0.940 / 0.960 / 1.020 / 1.100   (max/min 1.170)
+    // The 8-ring's >1 entries are the accumulator beating the graph shortest path
+    // on the diagonals; per-ray accumulators remove that, so what is left is the
+    // honest polygon defect: every direction at or inside the true circle. What
+    // is left is per-tick quantization, not the graph metric — a cell fires on the
+    // tick its accumulator passes 1, so a ray whose crossing time is not a whole
+    // number of ticks always fires late. Here a cardinal step is exactly 4 ticks
+    // and loses nothing, while a diagonal step takes 4√2 = 5.66 and rounds to 6,
+    // which is the ~6 % shortfall at 45°.
     const rel = profile.map((r) => r / east);
-    expect(Math.max(...rel)).toBeLessThan(1.15); // diagonal bulge
-    expect(Math.min(...rel)).toBeGreaterThan(0.90); // the 11.25° shortfall
-    expect(Math.max(...rel) / Math.min(...rel)).toBeLessThan(1.25);
+    expect(Math.max(...rel)).toBeLessThanOrEqual(1.0); // inscribed: nothing overshoots
+    expect(Math.min(...rel)).toBeGreaterThan(0.90);
+    expect(Math.max(...rel) / Math.min(...rel)).toBeLessThan(1.12);
 
-    // The diagonal really is the long direction, and 11.25° the short one.
-    expect(rel[4]).toBeGreaterThan(rel[0]); // 45° > 0°
-    expect(rel[1]).toBeLessThan(rel[0]); // 11.25° < 0°
+    // Strictly rounder than the 8-ring it replaces.
+    const ring8 = windlessProfile('elliptical', 'ring8');
+    const relRing8 = ring8.map((r) => r / ring8[0]);
+    const spread = (v: number[]): number => Math.max(...v) / Math.min(...v);
+    expect(spread(rel)).toBeLessThan(spread(relRing8));
   });
 });
 
@@ -189,7 +232,7 @@ describe('spread shape — an ellipse under a steady wind', () => {
   });
 
   it('responds to wind at all — which the old per-direction law does not', () => {
-    // The reason this phase exists. Projecting the wind onto each ray produces a
+    // The reason Phase 8 exists. Projecting the wind onto each ray produces a
     // fire whose *shape* barely changes with wind speed: every direction more
     // than 90° off the wind still gets the full no-wind R₀, so the flanks and
     // the back are pinned to R₀ while only the head accelerates, and the
@@ -197,14 +240,22 @@ describe('spread shape — an ellipse under a steady wind', () => {
     const dt = 1;
     const steps = 160;
 
+    /** Analytic Anderson length-to-breadth at a given midflame wind. */
+    const analyticLb = (wind: number): number => {
+      const bi = testBed();
+      return lengthToBreadthRatio(
+        effectiveWindSpeed(bi, windFactorFrom(bi, metersPerSecToFtPerMin(wind))) * FT_PER_MIN_TO_MPH,
+      );
+    };
+
     /** Measured length-to-breadth at a given midflame wind, under one law. */
-    const measure = (wind: number, shape: SpreadShape): number => {
+    const measure = (wind: number, shape: SpreadShape, template: SpreadTemplate = 'template16'): number => {
       const bi = testBed();
       const headMps = ftPerMinToMetersPerSec(
         bi.rateOfSpreadNoWindSlope * (1 + windFactorFrom(bi, metersPerSecToFtPerMin(wind))),
       );
       const world = pointIgnitionWorld(121, 4 * dt * headMps, wind, 0);
-      run(world, shape, steps, dt);
+      run(world, shape, steps, dt, template);
       const { head, back, halfWidth } = extents(world);
       return (head + back) / (2 * halfWidth);
     };
@@ -214,11 +265,58 @@ describe('spread shape — an ellipse under a steady wind', () => {
     const newLow = measure(2, 'elliptical');
     const newHigh = measure(5, 'elliptical');
 
-    // Old law: flat. Tripling the wind barely moves the shape.
+    // Old law: flat. Tripling the wind barely moves the shape (1.50 → 1.54).
     expect(oldHigh / oldLow).toBeLessThan(1.2);
-    // New law: the fire stretches out as the wind rises.
-    expect(newHigh / newLow).toBeGreaterThan(2.5);
-    // …and it tracks the analytic ratio, not the old law's constant.
+
+    // New law: the fire stretches as the wind rises, and it tracks the *analytic*
+    // ratio rather than any particular measured constant. Anderson says
+    // 3.19/1.50 = 2.13 between these two winds; the raster measures 2.55, high by
+    // a fifth because the discretization still loses more flank width at LB 3.2
+    // than at LB 1.5. (Pinning the raw measured ratio instead would be pinning
+    // the discretization error, which is exactly what Phase 8b changed.)
+    const analyticRatio = analyticLb(5) / analyticLb(2);
+    expect(analyticRatio).toBeGreaterThan(2); // this wind range really does stretch it
+    expect(newHigh / newLow).toBeGreaterThan(analyticRatio * 0.8);
+    expect(newHigh / newLow).toBeLessThan(analyticRatio * 1.5);
     expect(newLow).toBeGreaterThan(oldLow);
+  });
+
+  it('the 16-ray template is what makes a strongly wind-driven fire wide enough', () => {
+    // The Phase-8b acceptance gate. The 8-ray hull cuts the corner at the
+    // ellipse's widest point (~18° off the head, between the 0° and 45° rays), so
+    // it understates flank width, and the error grows with the aspect ratio. The
+    // knight rays at 26.57° land close to that point.
+    //
+    // Measured error against the analytic Anderson LB, 8 rays vs 16:
+    //   wind      1     1.5   2     2.5   3     4     5 m/s
+    //   analytic  1.21  1.34  1.50  1.69  1.91  2.46  3.19
+    //   ring8     +4%   +3%   +7%   +8%   +12%  +39%  +61%
+    //   16 rays   +4%   +3%   +7%   +8%   +12%  +4%   +28%
+    // Identical up to 3 m/s — below LB ≈ 2 the widest point is close enough to the
+    // 45° ray that the extra rays buy nothing — and the whole gain is above it,
+    // which is where the old error was worst. Both are still *narrow*-biased,
+    // i.e. they understate burned area.
+    const dt = 1;
+    const WIND = 5;
+    const bi = testBed();
+    const headMps = ftPerMinToMetersPerSec(
+      bi.rateOfSpreadNoWindSlope * (1 + windFactorFrom(bi, metersPerSecToFtPerMin(WIND))),
+    );
+    const lb = lengthToBreadthRatio(
+      effectiveWindSpeed(bi, windFactorFrom(bi, metersPerSecToFtPerMin(WIND))) * FT_PER_MIN_TO_MPH,
+    );
+    expect(lb).toBeGreaterThan(3); // a properly stretched fire
+
+    const measure = (template: SpreadTemplate): number => {
+      const world = pointIgnitionWorld(121, 4 * dt * headMps, WIND, 0);
+      run(world, 'elliptical', 160, dt, template);
+      const { head, back, halfWidth } = extents(world);
+      return (head + back) / (2 * halfWidth);
+    };
+    const err = (m: number): number => Math.abs(m / lb - 1);
+
+    expect(err(measure('ring8'))).toBeGreaterThan(0.5); // the defect being fixed
+    expect(err(measure('template16'))).toBeLessThan(0.35); // …roughly halved
+    expect(err(measure('template16'))).toBeLessThan(err(measure('ring8')) / 2);
   });
 });

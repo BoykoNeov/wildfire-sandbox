@@ -175,6 +175,12 @@ describe('presets', () => {
     // Recomputed in Phase 8: the elliptical spread law (`spreadShape:
     // 'elliptical'`, now the default) changes every direction but the head, so
     // this run is deliberately a different run. Previous value: 1457051880.
+    //
+    // Recomputed again in Phase 8b: the 16-ray template (`spreadTemplate:
+    // 'template16'`, now the default) adds the knight rays and gives every ray
+    // its own arrival accumulator, which changes the front's shape and its
+    // arrival order. Previous value: 382468332 — still reachable, byte-for-byte,
+    // as `spreadTemplate: 'ring8'`.
     const l = loadScenario(shrink(findPreset('timber-crown-run')!));
     l.sim.run(1200, 1);
     const { fire, intensity, crown } = l.world.layers;
@@ -191,7 +197,7 @@ describe('presets', () => {
       mix(kw >>> 16);
     }
     for (let i = 0; i < crown.data.length; i++) mix(crown.data[i]);
-    expect(h >>> 0).toBe(382468332);
+    expect(h >>> 0).toBe(2410933397);
   });
 
   it('the rain front pushes dead-fuel moisture up after the rain arrives', { timeout: 30000 }, () => {

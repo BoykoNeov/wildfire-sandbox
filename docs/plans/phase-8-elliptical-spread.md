@@ -77,10 +77,23 @@ area) rather than an invented behaviour.
    wind *at all*. Over-elongated-but-responsive is a categorically better error
    than shape-blind.
 
+> ### ⟶ REVERSED in Phase 8b — see [§ Phase 8b](#phase-8b--the-16-ray-template)
+>
+> The template **was** added, at the user's direction, with both stated
+> objections paid off: every knight move now tests the two cells it steps over
+> (measured: without that gate a one-cell line leaks 299 cells; with it, zero),
+> and the 5×5 dilation was made affordable by rewriting both passes as sliding
+> running sums. Reason 2 stands unchanged — it is why `'ring8'` is kept as a
+> byte-identical escape hatch rather than deleted.
+>
+> The decision above also **missed the real obstacle**, which was neither of the
+> two it names: a 16-ray template on the Phase-2 single accumulator runs 1.45×
+> too fast. That, not the knight-hop, is what made this a propagation change and
+> not just a wider stencil. Written up below.
+
 `tests/spread-shape.test.ts` pins both measurements so they stay known
-approximations rather than unexamined artefacts, and `docs/science.md` §9 names
-the 16-neighbour template (with the containment-line hazard) as the next step. A
-marker-based Huygens front stays deferred (handoff §4.2).
+approximations rather than unexamined artefacts. A marker-based Huygens front
+stays deferred (handoff §4.2).
 
 ---
 
@@ -237,3 +250,199 @@ Two new shape tests, plus the existing gates:
   is justified in the commit, not absorbed by loosening a tolerance.
 - `tests/determinism.test.ts` is unaffected — its golden runs the Phase-1
   `CaFireModel`, not this one.
+
+---
+
+# Phase 8b — the 16-ray template
+
+> **Status: SHIPPED.** Reverses the "keep the 8-neighbour template" decision
+> above, at the user's direction. Defect 2 (the 8-ray hull) is now narrowed, not
+> merely measured.
+
+`spreadTemplate?: 'ring8' | 'template16'` — default `'template16'`. One axis, two
+coherent laws, exactly as `spreadShape` is: the template and the accumulator that
+goes with it change together, because (as below) they are not independent.
+
+## What the extra rays are for
+
+The spread ellipse's widest point sits ~18° off the head. The 8-ray hull has rays
+at 0° and 45° and nothing between, so it cuts that corner and the fire comes out
+too narrow — increasingly so as the aspect ratio rises. The knight moves
+(±26.57° / ±63.43°, distance √5) land close to the widest point.
+
+Note what the extra rays are **not** for: a knight ray never buys the front
+*reach*. Whenever the supercover gate below lets one through, a two-step route
+exists alongside it (√2 + 1 = 2.414 cell-widths) and the knight is merely shorter
+(√5 = 2.236). The whole template is a **7.4 % finer metric** at 26.57°.
+
+## Obstacle 1 (foreseen) — a √5 step hops a one-cell line
+
+A knight move is the only move in the template that does not touch its
+destination's edge or corner: it steps *over* two cells. A one-cell-wide cut line
+stops every 8-ray front, so letting a knight ray ignore what it crosses would have
+silently voided the Phase-4 containment doctrine.
+
+**The gate.** Both cells the segment passes over must be burnable, or the ray is
+unavailable. For a (2, 1) source they are (1, 0) and (1, 1): the segment leaves
+(1, 0) at x = 1 as y crosses ½ and enters (1, 1) — i.e. the segment's
+*supercover*. Requiring both is what makes the guarantee exact: any nonburnable
+barrier separating source from destination must occupy one of
+{source, mid1, mid2, destination}, so a knight move can never cross a barrier an
+8-neighbour front could not.
+
+Two details that matter:
+
+- **The test is on fuel, never fire state.** Burnt-over ground *was* burnable fuel
+  and a knight move across it is legitimate; gating on `fire[]` would make the
+  front stall behind its own burn scar. Retardant re-pins moisture rather than
+  fuel, so a drop slows a long ray without blocking it — correct, and worth saying
+  out loud so nobody later reads it as a bug.
+- **Burnability is read from a 256-entry table**, not through
+  `IFuelModel.getParams`: the gate runs twice per long ray in the hot loop, and a
+  per-cell virtual call there is exactly what the architecture invariants forbid.
+  A fuel *id*'s burnability never changes — suppression rewrites the id at a cell,
+  not the meaning of the id — which is the same caching argument as `bedCache`.
+
+Pinned by `tests/suppression.test.ts` ("a ONE-cell line holds"), which cuts a
+*single* column — the existing 4a gate cuts two, which no ray in either template
+can cross, so it would never have caught this. Measured with the gate disabled:
+299 cells ignite past the line. With it: zero. A one-cell gap in the same column
+still leaks, so the assertion is about the barrier and not about a front that was
+never going to arrive.
+
+**Not fixed, and pre-existing:** a purely *diagonal* one-cell line still leaks
+through the corner cut, because the √2 rays are ungated and two cells meeting at a
+corner do not separate the plane. That is Phase-4 behaviour, unchanged here.
+
+## Obstacle 2 (not foreseen) — the accumulator overspeeds by 1.45×
+
+This is the one the decision above missed, and it is the reason Phase 8b is a
+propagation change rather than a wider stencil.
+
+The Phase-2 accumulator advances one `progress` value per cell by the **fastest
+rate available at that instant**. Add the knight rays and a cell picks up credit
+from its knight neighbour two columns back — which lights a whole crossing-period
+early, at 1/√5 of the cardinal rate — and then adds the cardinal rate on top when
+the nearer neighbour lights. Steady state:
+
+```
+P/T = 1 − (1/√5)·(P/T)   ⇒   P = T/(1 + 1/√5) = 0.69 T
+```
+
+i.e. **1.45× too fast**. Measured on a windless point ignition whose ideal radius
+is 25 cells: radii of 33–36, or +32 % to +44 %, in every direction. That breaks
+the model's core invariant — the front's speed *is* the Rothermel rate — and would
+have taken `tests/spread-ros.test.ts` with it.
+
+The 8-ring escapes this only because its longer ray (√2) is never available
+earlier than its shorter one.
+
+**No admissibility rule can fix it.** Several were tried on paper — use the knight
+ray only when the intermediates are unburnt, only when they *are* burnt, only when
+no shorter ray is available. Each fails, and for the same structural reason: the
+double count is between a ray and *itself via a shorter path*, so gating which
+rays are admissible cannot touch it. A finer metric is only worth something to an
+algorithm that computes a metric, and an integral over overlapping routes is not
+one. (This is why Finney's minimum-travel-time raster template is Dijkstra-shaped.)
+
+**The fix: one accumulator per ray.** Ray *n* completes when `∫ rate_n dt` reaches
+1; the cell ignites on the first ray to get there. No ray can hand credit to
+another, so the front is a shortest path over the 16-ray graph again:
+
+- planar front — cardinal completes in `T = cellSize/R`, knight in `2.236 T`, so
+  the cardinal fires first and the measured speed is exactly R;
+- 26.57° off a point ignition — knight arrives at `2.236 T` against `2.414 T` for
+  either two-step route, so the shape gain survives.
+
+Two alternatives were measured and rejected:
+
+- **Plain arrival-time relaxation** (`t_i = min(t_n + d/R)`, one float per cell)
+  is equivalent *only for constant rates*. It re-extrapolates from the neighbour's
+  ignition time every tick, so a cell 60 % across when the wind drops loses the
+  progress it invested. Integrating history is the accumulator's one genuine
+  virtue, and Phase-3 dynamic wind is mounted in the presets.
+- **Three accumulators, one per distance class** (1 / √2 / √5, 12 bytes/cell)
+  fixes the speed but not the shape: the head-ward and flank-ward rays of the
+  *same* length still trade credit, which measured 8–17 % **wide** — worse than
+  `'ring8'` below 4 m/s. Splitting by distance is not enough; it has to be by ray.
+
+Cost: 16 `Float32` per cell instead of 1 — 4 MB at 256², 17 MB at 512², 67 MB at
+`?size=1024`. `'ring8'` is the escape hatch if that ever matters.
+
+## Measured — what the template actually bought
+
+Windless point ignition, flat, ideal radius 25 cells (radius / radius at 0°):
+
+| angle | 0° | 11.25° | 22.5° | 33.75° | 45° | max/min |
+|---|---|---|---|---|---|---|
+| `ring8` | 1.000 | 0.940 | 0.960 | 1.020 | **1.100** | 1.170 |
+| `template16` | 1.000 | 0.940 | 0.960 | 0.960 | 0.920 | **1.087** |
+
+The 8-ring's entries above 1 are the accumulator beating the graph shortest path;
+per-ray accumulators remove them, so the 16-ray fire is **inscribed** — it reaches
+R₀·t on the rays and falls short between them, never past. What remains is
+per-tick quantization, not the graph metric: a cell fires on the tick its
+accumulator passes 1, and here a cardinal step is exactly 4 ticks while a diagonal
+takes 4√2 = 5.66 and rounds to 6.
+
+Length-to-breadth against the analytic Anderson value:
+
+| midflame wind | 1 | 1.5 | 2 | 2.5 | 3 | 4 | 5 m/s |
+|---|---|---|---|---|---|---|---|
+| analytic LB | 1.21 | 1.34 | 1.50 | 1.69 | 1.91 | 2.46 | 3.19 |
+| `ring8` | +4 % | +3 % | +7 % | +8 % | +12 % | **+39 %** | **+61 %** |
+| `template16` | +4 % | +3 % | +7 % | +8 % | +12 % | **+4 %** | **+28 %** |
+
+**Identical up to 3 m/s.** Below LB ≈ 2 the ellipse's widest point is close enough
+to the 45° ray that the extra rays buy nothing; the entire gain is above it, which
+is exactly where the old error was worst. Both remain *narrow*-biased, i.e. they
+understate burned area — the conservative direction. The phase-8 decision's "a
+gain confined to LB > 2.5" was, on the numbers, right.
+
+## Cost
+
+Per-candidate work roughly doubles (16 rays, not 8) and the candidate band widens
+from 3 cells to 5 (mean candidates 955 → 1500 on `timber-crown-run` at 256²,
+195 → 432 at 512²). Against that, both O(map) dilation passes were rewritten as
+**sliding running sums** — the count of ignited cells in the ±r span is carried
+cell to cell by one add and one subtract, so the cost no longer grows with the
+radius — and the separate ignited-mask pass was folded into the horizontal one.
+At 512² with a small fire those passes, not the sweep, *were* the fire model's
+whole cost.
+
+Net, `fire:rothermel`:
+
+| | HEAD (8-ray) | `template16` | `ring8` |
+|---|---|---|---|
+| `timber-crown-run` 256², 3000 steps | 0.910 ms/step | 1.532 | 0.790 |
+| `timber-crown-run` 512², 1800 steps | 1.291 | 1.730 | 1.357 |
+| `shifting-winds` 256², 1500 steps | 0.277 | 0.300 | 0.317 |
+
+Read those as approximate: the shape change alters how much front there is, so the
+runs being compared are not burning identical areas. `ring8` is at parity with
+HEAD or better *despite* the rewritten dilation, which is the useful control.
+`npm run profile` puts the whole sim at 1.43 ms/step at 256² and 2.78 ms/step at
+512², against a 16.67 ms frame — nothing is near the budget, so item G (a WebGL
+renderer) stays unnecessary.
+
+## Acceptance
+
+- `tests/spread-shape.test.ts` — **overspeed guard** (new): no direction may
+  exceed the ideal windless radius; the 16-ray front is inscribed while the
+  8-ring overshoots on the diagonal. This is the assertion that catches obstacle 2.
+- `tests/spread-shape.test.ts` — isotropy re-pinned at 1.087, and asserted
+  strictly rounder than `'ring8'`.
+- `tests/spread-shape.test.ts` — **wind response re-pinned against the analytic
+  LB ratio**, not the old measured constant. The previous `> 2.5` bound was
+  inflated by the very hull error this phase removes, so keeping it would have
+  been pinning the discretization.
+- `tests/spread-shape.test.ts` — **new acceptance gate**: at 5 m/s the 16-ray LB
+  error must be under half the 8-ray one.
+- `tests/spread-ros.test.ts` passes **unchanged** — the planar front still runs at
+  the analytic Rothermel rate.
+- `tests/suppression.test.ts` — the one-cell line gate described above.
+- `tests/scenario.test.ts` — the `timber-crown-run` golden hash is recomputed
+  (382468332 → 2410933397); the old value is still reachable byte-for-byte as
+  `spreadTemplate: 'ring8'`, verified against HEAD on three presets.
+- `tests/determinism.test.ts` unaffected — its golden runs the Phase-1
+  `CaFireModel`.

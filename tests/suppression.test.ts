@@ -70,6 +70,41 @@ describe('containment line stops the front (4a acceptance gate)', () => {
   });
 });
 
+describe('a ONE-cell line holds — the knight rays cannot hop it (Phase 8b)', () => {
+  // `'template16'` adds eight √5 "knight" rays, and a √5 step is long enough to
+  // land on the far side of a single nonburnable column. Every long ray therefore
+  // has to test the two cells it steps over before it may be used
+  // (`docs/science.md` §1b); without that gate this front walks straight through.
+  //
+  // The 4a gate above cuts TWO columns, which no ray in either template can cross,
+  // so it would never have caught this. One column is the tight case.
+  const cutOneColumn = (world: WorldState, skipRow = -1): void => {
+    for (let y = 0; y < H; y++) {
+      if (y !== skipRow) world.layers.fuel.data[y * W + LINE_X] = Fuel.CutLine;
+    }
+  };
+
+  for (const spreadTemplate of ['ring8', 'template16'] as const) {
+    it(`${spreadTemplate}: a single full-height CutLine column holds`, () => {
+      const world = grassFront();
+      cutOneColumn(world);
+      run(world, [new RothermelFireModel(new TerrainFuelModel(), { spreadTemplate })], 400);
+
+      expect(farIgnited(world, LINE_X - 1)).toBeGreaterThan(0); // the front arrived…
+      expect(farIgnited(world, LINE_X + 1)).toBe(0); // …and nothing is past the line
+    });
+  }
+
+  it('one gap in that same column and the front does get through', () => {
+    // Non-vacuity: the assertion above is about the barrier, not about a front
+    // that was never going to arrive. Open a single cell and the fire crosses.
+    const world = grassFront();
+    cutOneColumn(world, MID);
+    run(world, [new RothermelFireModel(new TerrainFuelModel())], 400);
+    expect(farIgnited(world, LINE_X + 1)).toBeGreaterThan(0);
+  });
+});
+
 describe('a wet band stalls the front, then the front crosses as it dries', () => {
   it('moisture above extinction holds while wet; drydown lets the front cross', () => {
     const world = grassFront();

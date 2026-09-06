@@ -131,9 +131,23 @@ direction of maximum spread, and every other direction is read off the
 Anderson-1983 spread ellipse at its focus. Expect visibly different fires than in
 Phase 7 — longer, much slower at the back, and **wider at the flanks** (the flank
 rate is 4–6× R₀, not R₀). One Rothermel evaluation per cell replaces eight.
-`spreadShape: 'perDirection'` restores the Phase-2 law.
-Next: the remaining honest gaps in `docs/science.md` §9 (a smooth wavefront — the
-16-neighbour template, then Huygens; per-class dead moisture; live-moisture curve;
+`spreadShape: 'perDirection'` restores the Phase-2 law. →
+**P8b 16-ray template** ✅ (same plan doc, §"Phase 8b"; reverses that plan's own
+"keep the 8-neighbour template" decision at the user's direction): the front now
+travels along 16 rays, the 8-ring plus the eight knight moves at ±26.57°/±63.43°,
+which land near the spread ellipse's widest point. Two things came with it.
+**Every knight move tests the two cells it steps over** — a √5 step would
+otherwise hop a one-cell containment line and silently void the Phase-4 doctrine
+(measured: 299 cells leak without the gate, zero with it). And **every ray gets
+its own arrival accumulator**: a 16-ray template on the Phase-2 single accumulator
+runs **1.45× too fast**, because a cell takes credit from its knight neighbour two
+columns back and then adds the cardinal rate on top. Result: length-to-breadth
+error at 4–5 m/s drops from +39%/+61% to +4%/+28%, the windless fire goes from
+1.17 to 1.09 max/min anisotropy and no longer overshoots R₀ anywhere, and the fire
+model costs ~1.7× (1.53 vs 0.91 ms/step at 256² — still a fifth of the frame
+budget). `spreadTemplate: 'ring8'` restores the Phase-2..8 law byte-for-byte.
+Next: the remaining honest gaps in `docs/science.md` §9 (a smooth wavefront — now
+Huygens, the raster route is spent; per-class dead moisture; live-moisture curve;
 intensity-driven ember loft), then the additive future phases (WUI structures →
 industrial). Each phase must be runnable and verifiable before the next.
 
