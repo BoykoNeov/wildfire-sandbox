@@ -164,7 +164,25 @@ and an extreme 6/15/25 ranges 0.996× (FM9) to 0.891× (FM13) on R₀ — but ab
 twice that on fireline **intensity** (0.811× FM13, 0.933× FM10), which is what
 crown fire and ember production threshold on. `timber-crown-run` states its
 coarse moisture now (golden recomputed); `grass-valley` says `greenness: 0`
-instead of `liveMoisture: 0.6` (byte-identical, verified).
+instead of `liveMoisture: 0.6` (byte-identical, verified). →
+**P9b curing's load half** ✅ (`docs/science.md` §3c): `dynamicHerbLoad` adds
+BehavePlus's `dynamicLoadTransfer` — cured live-herbaceous load becomes a fourth
+**dead** class at the live-herb SAV and the fine dead moisture, the fraction read
+off the live herbaceous moisture already in use (so under the greenness curve it
+is just `f ≈ 1 − g`, one season knob driving both halves). **Off by default**: it
+is an *extension* of the Anderson catalogue, which BehavePlus itself gates behind
+an `isDynamic` flag all 13 models fail, and every existing bed and the
+`timber-crown-run` golden are byte-identical without it. Measured, and **it does
+the opposite of the intuition**: only FM2 carries live herbaceous load at all, and
+on FM2 fully cured the transfer takes R₀ to 0.957× and intensity to 0.841× —
+because moving a class between categories changes no geometry, only which
+extinction moisture damps it, and FM2's dead M_x is 15 % against a live M_x near
+1044 %. So in *this* catalogue the load half is the minor lever and pulls against
+the moisture half; it is the Scott & Burgan 40 that would make it dominant, and
+that catalogue is still §9's deferral (the mechanic, its prerequisite, is now
+done). Shipped with the **season pair** — `spring-green` / `late-season-cured`,
+one landscape and one weather where `greenness` is the only field that differs:
+2.34× the burned area and 1.59× the mean fireline intensity at one hour.
 Next: the two remaining honest gaps in `docs/science.md` §9 — a smooth wavefront
 (now Huygens; the raster route is spent) and intensity-driven ember loft distance
 — then the additive future phases (WUI structures → industrial). Each phase must

@@ -5,6 +5,7 @@ import {
   deadFuelBed,
   fuelBed,
   hasLiveFuel,
+  herbLoadTransferFraction,
   DEAD_10H_SAV,
   DEAD_100H_SAV,
 } from '../src/sim/anderson13';
@@ -19,6 +20,7 @@ import {
   meanPackingRatio,
   optimalPackingRatio,
   liveMoistureOfExtinction,
+  characteristicSAV,
   type SpreadEnv,
 } from '../src/sim/rothermel';
 
@@ -260,5 +262,135 @@ describe('per-class dead moisture', () => {
     // dead component preheats the live fuel less well: M_x,live falls.
     expect(flat).toBeGreaterThan(fm10.deadMx);
     expect(wetCoarse).toBeLessThan(flat);
+  });
+});
+
+/**
+ * Dynamic herbaceous **load transfer** (`herbLoadTransferFraction` plus the
+ * `herbLoadTransfer` bed option) — curing's other half, transcribed from
+ * BehavePlus `surfaceFuelbedIntermediates.cpp`, `dynamicLoadTransfer()`.
+ */
+describe('herbaceous load transfer (BehavePlus dynamicLoadTransfer)', () => {
+  it('reproduces the shipped fraction, residue and all', () => {
+    // if (M < 0.30) all of it; else if (M <= 1.20) 1.333 - 1.11*M; else none.
+    expect(herbLoadTransferFraction(0.1)).toBe(1);
+    expect(herbLoadTransferFraction(0.29)).toBe(1);
+    expect(herbLoadTransferFraction(0.3)).toBeCloseTo(1.0, 6); // 1.333 - 0.333
+    expect(herbLoadTransferFraction(0.75)).toBeCloseTo(0.5005, 6);
+    expect(herbLoadTransferFraction(1.5)).toBe(0);
+    // BehavePlus ships `1.333 - 1.11*M` with the exact `(1.20 - M)/0.9` commented
+    // out beside it, so fully green leaves a 0.1% residue rather than zero. Pinned
+    // deliberately: we reproduce the reference, we do not quietly correct it.
+    expect(herbLoadTransferFraction(1.2)).toBeCloseTo(0.001, 9);
+  });
+
+  it('is the greenness curve read backwards: f = 1 - g', () => {
+    // liveHerb = 0.30 + 0.90*g, so 1.333 - 1.11*(0.30 + 0.90*g) = 1.0 - 0.999*g.
+    // BehavePlus derives the transfer from live herbaceous moisture, and the
+    // season knob sets that moisture — so one knob drives both halves of curing.
+    for (const g of [0, 0.25, 0.5, 0.75, 1]) {
+      expect(herbLoadTransferFraction(0.3 + 0.9 * g)).toBeCloseTo(1 - g, 2);
+    }
+  });
+
+  it('moves load into a fourth dead class at the live-herb SAV and the fine moisture', () => {
+    // BehavePlus loadDead_[3] / savrDead_[3] / moistureDead_[3].
+    const fm2 = ANDERSON_13.get(2)!;
+    const bed = fuelBed(fm2, 0.06, 1.0, { liveHerb: 0.3, herbLoadTransfer: 1 });
+    const transferred = bed.particles.filter((q) => q.sav === fm2.liveHerbSav);
+    expect(transferred).toHaveLength(1);
+    expect(transferred[0].load).toBeCloseTo(fm2.liveHerbLoad, 12);
+    expect(transferred[0].moisture).toBe(0.06); // the FINE dead moisture, not the live one
+    expect(transferred[0].category).toBeUndefined(); // dead
+    // FM2 carries no live woody, so at full transfer the bed loses its live
+    // category outright rather than keeping a zero-load particle.
+    expect(bed.particles.some((q) => q.category === 'live')).toBe(false);
+    expect(bed.particles).toHaveLength(4);
+  });
+
+  it('halves cleanly: what leaves the live side is exactly what arrives dead', () => {
+    const fm2 = ANDERSON_13.get(2)!;
+    const bed = fuelBed(fm2, 0.06, 0.75, { liveHerb: 0.75, herbLoadTransfer: 0.5 });
+    const live = bed.particles.filter((q) => q.category === 'live');
+    const dead = bed.particles.filter((q) => q.category !== 'live');
+    expect(live).toHaveLength(1);
+    expect(live[0].load).toBeCloseTo(fm2.liveHerbLoad * 0.5, 12);
+    expect(dead).toHaveLength(4);
+    expect(dead[3].load).toBeCloseTo(fm2.liveHerbLoad * 0.5, 12);
+  });
+
+  it('is inert for the twelve models with no live herbaceous load', () => {
+    // Only FM2 carries one in the Anderson catalogue — the transfer is a
+    // dynamic-model mechanic and the standard 13 are static (`docs/science.md` §9).
+    for (const [n, m] of ANDERSON_13) {
+      if (n === 2) continue;
+      expect(m.liveHerbLoad).toBe(0);
+      expect(fuelBed(m, 0.07, 1.0, { herbLoadTransfer: 1 })).toEqual(fuelBed(m, 0.07, 1.0));
+    }
+  });
+
+  it('omitting it reproduces the untransferred bed byte-for-byte, all 13 models', () => {
+    for (const [, m] of ANDERSON_13) {
+      expect(fuelBed(m, 0.0731, 0.83, { herbLoadTransfer: 0 })).toEqual(fuelBed(m, 0.0731, 0.83));
+      expect(deadFuelBed(m, 0.0731, { herbLoadTransfer: 0 })).toEqual(deadFuelBed(m, 0.0731));
+    }
+  });
+
+  it('stays finite everywhere, including the bed that loses its live category', () => {
+    for (const [, m] of ANDERSON_13) {
+      for (const f of [0, 0.5, 1]) {
+        const r = surfaceSpread(fuelBed(m, 0.06, 1.0, { herbLoadTransfer: f }), WINDY);
+        for (const v of Object.values(r)) expect(Number.isFinite(v)).toBe(true);
+      }
+    }
+  });
+
+  it('LOWERS FM2 spread and intensity when fully cured — extinction moisture is why (measured)', () => {
+    // The intuition ("dead fine fuel carries fire, so curing must help") is wrong
+    // for FM2, and the reason is worth pinning. Moving the class changes neither
+    // the bed's total load, nor its depth, packing ratio or characteristic SAV —
+    // only which category the load is damped in. FM2's *dead* moisture of
+    // extinction is 15%, while its live one comes out around 1044%, so the same
+    // grass is damped 0.56 as dead fuel at 6% and 0.93 as live fuel at 30%.
+    const fm2 = ANDERSON_13.get(2)!;
+    const cured = { liveHerb: 0.3, liveWoody: 0.6 };
+    const a = surfaceSpread(fuelBed(fm2, 0.06, 1.0, cured), CALM);
+    const b = surfaceSpread(fuelBed(fm2, 0.06, 1.0, { ...cured, herbLoadTransfer: 1 }), CALM);
+    expect(b.rateOfSpreadNoWindSlope / a.rateOfSpreadNoWindSlope).toBeCloseTo(0.957, 3);
+    expect(b.firelineIntensity / a.firelineIntensity).toBeCloseTo(0.841, 3);
+    expect(moistureDamping(0.06, fm2.deadMx)).toBeCloseTo(0.5563, 4);
+    expect(liveMoistureOfExtinction(fuelBed(fm2, 0.06, 1.0, cured))).toBeCloseTo(10.4445, 3);
+  });
+
+  it('is a smaller lever than the season moisture it rides on (FM2, measured)', () => {
+    // Green -> cured moves R0 x1.38 on moisture alone; the transfer takes that to
+    // x1.32. So for the Anderson catalogue the load half is the *minor* one and it
+    // pulls the other way — the opposite of what it does in the Scott & Burgan
+    // dynamic models, where herbaceous load is a much bigger share of the bed.
+    const fm2 = ANDERSON_13.get(2)!;
+    const at = (g: number, dyn: boolean): number =>
+      surfaceSpread(
+        fuelBed(fm2, 0.06, 1.0, {
+          liveHerb: 0.3 + 0.9 * g,
+          liveWoody: 0.6 + 0.9 * g,
+          herbLoadTransfer: dyn ? herbLoadTransferFraction(0.3 + 0.9 * g) : 0,
+        }),
+        CALM,
+      ).rateOfSpreadNoWindSlope;
+    expect(at(0, false) / at(1, false)).toBeCloseTo(1.3815, 3);
+    expect(at(0, true) / at(1, true)).toBeCloseTo(1.3219, 3);
+  });
+
+  it('coarsens the dead bed, so cured fuel also burns for longer', () => {
+    // The transferred class arrives at SAV 1500 against FM2's fine 3000, so the
+    // dead characteristic SAV falls and Albini's residence time 384/sigma rises.
+    // `deadFuelBed` takes the transfer for exactly this reason: one fuel, one dead
+    // bed, whether the caller wants spread or burnout.
+    const fm2 = ANDERSON_13.get(2)!;
+    const plain = characteristicSAV(deadFuelBed(fm2, 0).particles);
+    const cured = characteristicSAV(deadFuelBed(fm2, 0, { herbLoadTransfer: 1 }).particles);
+    expect(plain).toBeCloseTo(2941.3, 1);
+    expect(cured).toBeCloseTo(2784.0, 1);
+    expect(384 / cured / (384 / plain)).toBeCloseTo(1.0565, 3);
   });
 });

@@ -207,6 +207,42 @@ describe('presets', () => {
     expect(h >>> 0).toBe(4181824974);
   });
 
+  it('the season pair differs in greenness and nothing else', () => {
+    // The teaching claim is "only the season differs", so pin it structurally
+    // rather than trusting the two literals to stay in step.
+    const green = findPreset('spring-green')!;
+    const cured = findPreset('late-season-cured')!;
+    const strip = (p: Scenario): unknown => ({
+      ...p,
+      id: '',
+      name: '',
+      description: '',
+      fireModel: { ...p.fireModel, greenness: undefined },
+    });
+    expect(strip(green)).toEqual(strip(cured));
+    expect(green.fireModel?.greenness).toBe(1);
+    expect(cured.fireModel?.greenness).toBe(0);
+    expect(green.fireModel?.dynamicHerbLoad).toBe(true);
+  });
+
+  it('the cured member burns more than the green one (measured)', { timeout: 30000 }, () => {
+    // One landscape, one weather, one ignition: the whole difference is live fuel.
+    // At full size and one hour this is 989 cells against 422 (x2.34) with mean
+    // fireline intensity x1.59; shrunk to 128 for the suite it is the same story
+    // at a smaller scale, so the assertion is the ordering plus a margin.
+    const burn = (id: string): number => {
+      const l = loadScenario(shrink(findPreset(id)!));
+      l.sim.run(3600, 1);
+      let n = 0;
+      for (const v of l.world.layers.fire.data) if (v !== FireState.Unburned) n++;
+      return n;
+    };
+    const green = burn('spring-green');
+    const cured = burn('late-season-cured');
+    expect(green).toBeGreaterThan(3);
+    expect(cured).toBeGreaterThan(green * 1.3);
+  });
+
   it('the rain front pushes dead-fuel moisture up after the rain arrives', { timeout: 30000 }, () => {
     const l = loadScenario(shrink(findPreset('rain-front')!, 64));
     const mean = (): number => {

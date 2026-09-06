@@ -163,8 +163,80 @@ const rainFront: Scenario = {
   timeScale: 120,
 };
 
+/**
+ * The season pair. One landscape, one weather, one ignition — and **`greenness`
+ * is the only field that differs** between the two members, so any difference on
+ * screen is attributable to the season and nothing else.
+ *
+ * Every band carries live fuel, which is what makes the contrast visible at all:
+ * grass is FM2 (the one Anderson model with a live *herbaceous* load), brush is
+ * FM5 (~57 % live by load) and timber is FM10. Both members run with
+ * `dynamicHerbLoad` on, so the season drives curing's *two* halves at once — the
+ * live classes dry out along the greenness ladder, and the cured herbaceous load
+ * moves into the dead fuel by the same moisture that dried it
+ * (`docs/science.md` §3c).
+ */
+function seasonUnit(id: string, name: string, greenness: number, description: string): Scenario {
+  return {
+    id,
+    name,
+    description,
+    seed: 2718,
+    width: W,
+    height: H,
+    terrain: { waterLevel: 0.26, rockLevel: 0.88, grassBand: 0.5, brushBand: 0.8, moistureMin: 6, moistureMax: 26 },
+    fuelMapping: { grass: 2, brush: 5, timber: 10 },
+    fireModel: {
+      windReference: 'open',
+      greenness,
+      dynamicHerbLoad: true,
+      dead10hMoisture: 0.08,
+      dead100hMoisture: 0.09,
+    },
+    weather: {
+      wind: [{ time: 0, u: 6.0, v: -2.0 }], // a steady 6.3 m/s 20-ft wind toward the ENE
+      ambient: { temperatureC: 28, relativeHumidity: 25, rainRate: 0 },
+      gust: { speedAmp: 0.3, dirAmp: 0.25 },
+    },
+    ignitions: [{ x: C - 60, y: C + 30 }],
+    agents: {
+      crew: { x: C, y: C - 20 },
+      engine: { x: C - 70, y: C + 60 },
+      aircraft: { x: C - 80, y: C - 70 },
+    },
+    timeScale: 60,
+  };
+}
+
+const springGreen = seasonUnit(
+  'spring-green',
+  'Spring green',
+  1,
+  'Spring flush on a warm, breezy afternoon: the grass is growing, the brush is full of water. ' +
+    'Live fuel at 120 % (herb) and 150 % (woody) is a heat sink the fire has to dry before it can burn — ' +
+    'the same wind and the same dead fuel move a much smaller fire. Run it against "Late-season cured": ' +
+    'the landscape, weather and ignition are identical and only the season differs.',
+);
+
+const lateSeasonCured = seasonUnit(
+  'late-season-cured',
+  'Late-season cured',
+  0,
+  'The same afternoon in the same place, months later. The grass has cured — down to 30 % moisture, ' +
+    'and what cured is no longer live fuel at all: it is transferred into the dead 1-hr class. The brush ' +
+    'is at its seasonal low. Same wind, same dead-fuel moisture, a far bigger fire. The live classes are ' +
+    'the whole difference.',
+);
+
 /** All presets, in menu order. */
-export const PRESETS: ReadonlyArray<Scenario> = [shiftingWinds, grassValley, timberCrownRun, rainFront];
+export const PRESETS: ReadonlyArray<Scenario> = [
+  shiftingWinds,
+  grassValley,
+  timberCrownRun,
+  rainFront,
+  springGreen,
+  lateSeasonCured,
+];
 
 /** The preset the sandbox opens on. */
 export const DEFAULT_PRESET_ID = shiftingWinds.id;

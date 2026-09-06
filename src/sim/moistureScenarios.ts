@@ -67,13 +67,14 @@ export const LIVE_MOISTURE: Readonly<Record<'fullyCured' | 'twoThirdsCured' | 'o
  * Out-of-range values are clamped — extrapolating the line is not supported by
  * anything in the source.
  *
- * **This moves moisture only, and is deliberately not called `curing`.** In real
- * BehavePlus, curing's *dominant* effect is transferring cured live-herbaceous
- * **load** into the dead 1-hr class, and dead fine fuel is what carries fire — a
- * far bigger lever than the moisture change. The Anderson 13 models are static and
- * carry no such transfer (it belongs to the Scott & Burgan 40), so naming this
- * knob `curing` would name it after the half that is not implemented. Load
- * transfer is a recorded deferral (`docs/science.md` §9).
+ * **This moves moisture only, and is deliberately not called `curing`.** Curing's
+ * other half is moving the cured live-herbaceous **load** into the dead fuel —
+ * `herbLoadTransferFraction` in `anderson13.ts`, reached by the fire model's
+ * `dynamicHerbLoad` option and **off by default**. The two are consistent when it
+ * is on, because that fraction is derived from the very moisture this curve sets
+ * (f ≈ 1 − g), but a bare `greenness` dries the live fuel without curing it. So
+ * the knob is named for the season, which is what it always does, rather than for
+ * curing, which it only half does. See `docs/science.md` §3b and §3c.
  */
 export function liveMoistureFromGreenness(greenness: number): LiveMoisturePair {
   const g = greenness < 0 ? 0 : greenness > 1 ? 1 : greenness;
