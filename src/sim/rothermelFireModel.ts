@@ -115,9 +115,11 @@ export interface RothermelFireModelOptions {
  *
  *   progress[i] += max over ignited neighbours n of  ROS(i, n→i) / (dist·cellSize) · dt
  *
- * where `ROS(i, n→i)` is the Rothermel ROS for cell `i`'s own fuel bed with wind
- * and slope projected onto the neighbour→cell direction. When `progress ≥ 1` the
- * cell ignites. A cell crossing one cell of width `cellSize` at rate `ROS` takes
+ * where `ROS(i, n→i)` is the rate at which cell `i`'s own fuel bed burns *along
+ * that ray* — the spread-shape law supplies it (elliptical by default, see
+ * below; `'perDirection'` projects wind and slope onto the ray instead). The
+ * accumulator itself is independent of which law is mounted. When `progress ≥ 1`
+ * the cell ignites. A cell crossing one cell of width `cellSize` at rate `ROS` takes
  * `cellSize/ROS` seconds, so the measured front speed equals `ROS` along every
  * neighbour ray (cardinal and diagonal alike — `dist` is in the denominator).
  * `tests/spread-ros.test.ts` is the acceptance gate for this.
@@ -154,7 +156,11 @@ export interface RothermelFireModelOptions {
  * the canopy fuel consumed. The FM10 proxy bed the 1991 correlation needs is
  * assembled once per candidate cell, at the cell's own dead/live moisture, and
  * driven by 0.4 × the 20-ft wind — under the `'midflame'` convention the 20-ft
- * wind is backed out through the surface fuel's own unsheltered WAF. Canopy
+ * wind is backed out through the surface fuel's own unsheltered WAF. What that
+ * wind *is* depends on the spread law: `'perDirection'` projects it onto each
+ * ray, while the elliptical law takes the cell's full wind magnitude once and
+ * defers the proxy's head rate until some direction actually clears I_0
+ * ({@link ensureCrownHead}) — most cells never do. Canopy
  * bulk density comes from the cell's canopy byte × the stand's maximum, so
  * grass (CBD ≈ 0.01) never crowns and a canopy byte of 0 short-circuits the
  * whole evaluation. Everything stays inside `step(world, dt)`: no new seam, no
@@ -294,6 +300,11 @@ export class RothermelFireModel implements IFireModel {
   }
 
   /**
+   * **The `'perDirection'` (Phase-2) path only** — the default elliptical law
+   * goes through {@link prepareCellEllipse} + {@link ellipticalDirection}
+   * instead. Kept reachable so the two laws stay comparable; see
+   * {@link SpreadShape} for why it is not the default.
+   *
    * Fire behaviour along one direction into a cell: surface Rothermel, then the
    * crown transition when the cell has a crown and the surface fire is hot enough.
    * `windMps` is the midflame wind along the direction (≥ 0, already WAF-reduced);
