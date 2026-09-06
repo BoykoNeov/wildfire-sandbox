@@ -79,8 +79,8 @@ cursors and wind arrows draw on the screen-resolution overlay canvas
 ```
 src/core/      world state, layers, rng, clock, system, simulation (the foundation)
 src/models/    the five swappable seam interfaces + IgnitableEntity
-src/sim/       pure science modules (rothermel, anderson13, emc, windAdjustment,
-               crownFire, canopyStand) + systems (fire models, weather, moisture,
+src/sim/       pure science modules (rothermel, anderson13, emc, moistureScenarios,
+               windAdjustment, crownFire, canopyStand) + systems (fire models, weather, moisture,
                spotting, suppression agents, retardant) + stats (pure)
 src/gen/       terrain generation (seeded value noise)
 src/scenario/  Scenario data + loadScenario (the ONE pipeline builder) + presets
@@ -145,11 +145,30 @@ columns back and then adds the cardinal rate on top. Result: length-to-breadth
 error at 4–5 m/s drops from +39%/+61% to +4%/+28%, the windless fire goes from
 1.17 to 1.09 max/min anisotropy and no longer overshoots R₀ anywhere, and the fire
 model costs ~1.7× (1.53 vs 0.91 ms/step at 256² — still a fifth of the frame
-budget). `spreadTemplate: 'ring8'` restores the Phase-2..8 law byte-for-byte.
-Next: the remaining honest gaps in `docs/science.md` §9 (a smooth wavefront — now
-Huygens, the raster route is spent; per-class dead moisture; live-moisture curve;
-intensity-driven ember loft), then the additive future phases (WUI structures →
-industrial). Each phase must be runnable and verifiable before the next.
+budget). `spreadTemplate: 'ring8'` restores the Phase-2..8 law byte-for-byte. →
+**P9 fuel moisture** ✅ (`docs/plans/phase-9-fuel-moisture.md`): the bed was being
+handed one dead moisture and one live moisture where the science asks for three
+and two. Now `deadFuelBed`/`fuelBed` take an optional `BedMoisture`, and the fire
+model has `dead10hMoisture`/`dead100hMoisture` plus a `greenness` knob (0 cured →
+1 green) that sets live herbaceous and live woody apart along the BehavePlus
+ladder. Both are **scenario constants, not layers, and not offsets from the fine
+layer** — their timelags (10 h, 100 h, a season) all outrun a sandbox burn, so
+what matters is the antecedent condition; an offset would make the logs chase the
+grass through a rain pulse. Bed assembly only: no Rothermel math changed, no
+encoding changed, no new system, and a prepared bed stays a pure function of
+(fuel id, fine moisture byte) so the Phase-7 bed cache is untouched. Omitting
+every new option reproduces the old bed byte-for-byte. Measured before it was
+documented, and **smaller than it feels**: single-dead-class models (FM1/FM3)
+cannot move at all, BehavePlus's own 6/7/8 triple moves the largest model 1.6 %,
+and an extreme 6/15/25 ranges 0.996× (FM9) to 0.891× (FM13) on R₀ — but about
+twice that on fireline **intensity** (0.811× FM13, 0.933× FM10), which is what
+crown fire and ember production threshold on. `timber-crown-run` states its
+coarse moisture now (golden recomputed); `grass-valley` says `greenness: 0`
+instead of `liveMoisture: 0.6` (byte-identical, verified).
+Next: the two remaining honest gaps in `docs/science.md` §9 — a smooth wavefront
+(now Huygens; the raster route is spent) and intensity-driven ember loft distance
+— then the additive future phases (WUI structures → industrial). Each phase must
+be runnable and verifiable before the next.
 
 One scope note carried by `?size=`: the terrain generator samples in normalized
 coordinates, so a bigger map is the same landscape spread over more ground —

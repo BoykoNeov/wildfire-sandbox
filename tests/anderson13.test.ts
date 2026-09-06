@@ -172,7 +172,7 @@ describe('cross-model physical sanity', () => {
  * Per-size-class dead-fuel moisture (Phase-2 plan §D6 item 1, landed in Phase 9).
  * The 10-hr and 100-hr classes can carry their own moisture instead of inheriting
  * the cell's fine (1-hr) value. Numbers below are **measured**, not assumed — see
- * `docs/science.md` §5a.
+ * `docs/science.md` §3a.
  */
 describe('per-class dead moisture', () => {
   const uniform = (fm: number, m: number) =>

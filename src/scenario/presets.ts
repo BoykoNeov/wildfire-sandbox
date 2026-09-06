@@ -58,7 +58,11 @@ const grassValley: Scenario = {
   height: H,
   terrain: { waterLevel: 0.24, rockLevel: 0.9, grassBand: 0.7, brushBand: 0.9, moistureMin: 6, moistureMax: 30 },
   fuelMapping: { grass: 3, brush: 5, timber: 9 },
-  fireModel: { windReference: 'open', liveMoisture: 0.6 },
+  // Fully cured: the season knob rather than a bare live-moisture number. FM3 and
+  // FM9 carry no live fuel at all, and FM5's live woody sits at 60% either way, so
+  // this is byte-identical to the `liveMoisture: 0.6` it replaces — it just says
+  // *why* 0.6. See `docs/science.md` §3b.
+  fireModel: { windReference: 'open', greenness: 0 },
   weather: {
     wind: [
       { time: 0, u: 6.4, v: -6.4 }, // 9 m/s 20-ft wind blowing toward the NE (screen-up is −y)

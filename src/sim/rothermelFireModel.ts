@@ -10,6 +10,7 @@ import {
   DEFAULT_CANOPY_STAND,
   type CanopyStand,
 } from './canopyStand';
+import { liveMoistureFromGreenness } from './moistureScenarios';
 import { unshelteredWaf, windAdjustmentFactor } from './windAdjustment';
 import {
   CROWN_WIND_REDUCTION,
@@ -223,6 +224,23 @@ export interface RothermelFireModelOptions {
   dead10hMoisture?: number;
   /** 100-hr dead-fuel moisture [fraction]. See {@link dead10hMoisture}. */
   dead100hMoisture?: number;
+  /**
+   * Season as one knob: `0` = fully cured (late season, everything brown), `1` =
+   * fully green (spring flush). Sets the two live classes apart along the standard
+   * BehavePlus ladder — herbaceous 30…120%, woody 60…150%
+   * (`liveMoistureFromGreenness`). Prefer this to {@link liveMoisture}, which
+   * applies one number to both classes.
+   *
+   * Moisture only: it does **not** transfer cured herbaceous load into the dead
+   * 1-hr class the way real curing does, which is why it is not called `curing`.
+   * Overridden per class by {@link liveHerbMoisture} / {@link liveWoodyMoisture};
+   * falls back to {@link liveMoisture} when omitted.
+   */
+  greenness?: number;
+  /** Live herbaceous moisture [fraction]; overrides {@link greenness}. */
+  liveHerbMoisture?: number;
+  /** Live woody moisture [fraction]; overrides {@link greenness}. */
+  liveWoodyMoisture?: number;
   /** See {@link WindReference}. Default `'midflame'`. */
   windReference?: WindReference;
   /** Canopy structure for wind sheltering and crown fire. Default {@link DEFAULT_CANOPY_STAND}. */
@@ -476,9 +494,19 @@ export class RothermelFireModel implements IFireModel {
   ) {
     const o: RothermelFireModelOptions = typeof opts === 'number' ? { liveMoisture: opts } : opts;
     this.liveMoisture = o.liveMoisture ?? DEFAULT_LIVE_MOISTURE;
+    // Resolve the per-class splits once. Precedence is explicit per class, then
+    // the greenness curve, then the single `liveMoisture` fallback inside the bed
+    // builder. When nothing asks for a split the whole record stays `undefined`
+    // and the assembled beds are byte-identical to the pre-split model.
+    const green = o.greenness !== undefined ? liveMoistureFromGreenness(o.greenness) : undefined;
+    const liveHerb = o.liveHerbMoisture ?? green?.liveHerb;
+    const liveWoody = o.liveWoodyMoisture ?? green?.liveWoody;
     this.bedMoisture =
-      o.dead10hMoisture !== undefined || o.dead100hMoisture !== undefined
-        ? { dead10h: o.dead10hMoisture, dead100h: o.dead100hMoisture }
+      o.dead10hMoisture !== undefined ||
+      o.dead100hMoisture !== undefined ||
+      liveHerb !== undefined ||
+      liveWoody !== undefined
+        ? { dead10h: o.dead10hMoisture, dead100h: o.dead100hMoisture, liveHerb, liveWoody }
         : undefined;
     this.windReference = o.windReference ?? 'midflame';
     this.canopy = o.canopy ?? DEFAULT_CANOPY_STAND;

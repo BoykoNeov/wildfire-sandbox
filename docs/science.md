@@ -116,6 +116,27 @@ moisture by surface area, which punishes coarse fuel again. Second, it is roughl
 and ember production (§6) threshold on — so the place it changes a *run* is
 whether a stand torches, not how fast the flank creeps.
 
+## 3b. Live-fuel moisture — the greenness curve
+
+| | |
+|---|---|
+| Module | `src/sim/moistureScenarios.ts` (pure); options `greenness` / `liveHerbMoisture` / `liveWoodyMoisture` on `RothermelFireModel` |
+| Data | BehavePlus's four standard live pairs (`moistureScenarios.cpp`): fully cured 30 % herb / 60 % woody, ⅔ cured 60/90, ⅓ cured 90/120, fully green 120/150. Woody runs 30 points wetter than herbaceous at every step. |
+| Form | One knob, `greenness` ∈ [0, 1] (0 = fully cured, 1 = fully green), linear through both columns so all four standard rows come back exactly at 0, ⅓, ⅔, 1: `liveHerb = 0.30 + 0.90·g`, `liveWoody = 0.60 + 0.90·g`. Clamped outside the range. |
+| Pinned by | `tests/moistureScenarios.test.ts` |
+
+This also splits live **herbaceous** from live **woody**, which the bed had been
+running at one shared value. Like the coarse dead classes (§3a) it is a scenario
+input rather than sim state, and for the same reason: live fuel greens up and
+cures over weeks, not over the minutes-to-hours a sandbox run covers.
+
+**Why it is not called `curing`.** In BehavePlus, curing's dominant effect is
+transferring cured live-herbaceous **load** into the dead 1-hr class — and dead
+fine fuel is what carries fire, so that transfer is a much bigger lever than the
+moisture change. The Anderson 13 models are static and carry no transfer (it
+belongs to the Scott & Burgan 40), so this knob implements the moisture half only
+and is named for what it does. The load transfer is a deferral, §9.
+
 ## 4. Wind — reference height and the wind adjustment factor
 
 | | |
@@ -214,7 +235,14 @@ upslope only.
   for the run. That is defensible at sandbox run lengths (minutes to hours vs.
   timelags of 10 and 100 hours) and it is why they are scenario inputs rather than
   a system output — but a multi-day run would need them integrated.
-- **Live fuel moisture dynamics.** A scenario scalar, not a seasonal curve.
+- **Live fuel moisture *dynamics*.** There is a seasonal curve now (§3b), but it
+  is evaluated once from a scenario knob, not integrated over a season. Same
+  reasoning as the coarse dead classes: the swing is weeks long and a run is not.
+- **Herbaceous load transfer.** As grass cures, BehavePlus moves a fraction of the
+  live-herbaceous load into the dead 1-hr class — the dominant effect of curing,
+  and a bigger lever than the moisture change §3b models. The Anderson 13 models
+  are static and carry no transfer; it belongs to the Scott & Burgan 40 dynamic
+  models, which would be a catalogue addition, not a tweak.
 - **Intensity-driven ember *loft distance*.** Launch rate now reads the recorded
   fireline intensity (§6), but how far a brand carries is still wind × canopy ×
   crown tier, not a plume-height function of intensity.
@@ -240,6 +268,8 @@ upslope only.
 | Cell size | metres; default 30 m (0.09 ha) |
 | Elevation | metres, Float32 |
 | Moisture byte | linear 0..255 ↔ 0..1 dead-fuel fraction |
+| Coarse dead moisture | scenario constants (`dead10hMoisture` / `dead100hMoisture`), fractions; default = the cell's 1-hr byte |
+| Live moisture | scenario `greenness` 0..1 → herbaceous 30–120 %, woody 60–150 %; or per-class overrides |
 | Canopy byte | tree-overstory cover / bulk-density proxy (0..255); timber 200, brush 40, grass 10 |
 | Wind field | m/s, vector points the way the wind blows; screen y grows south; reference height per `windReference` |
 | Wind sampling | at the destination cell for spread; at the source cell for ember transport |

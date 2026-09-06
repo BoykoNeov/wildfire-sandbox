@@ -81,9 +81,7 @@ by exp(−138/σ), which is ≈ 0.93 for fine fuel, 0.28 at the 10-hr SAV of 109
 0.010 at the 100-hr SAV of 30, and η_M weights the category moisture by surface
 area, punishing coarse fuel again.
 
-## Part 2 — live fuel moisture from a greenness curve
-
-*(see the commit that lands it; design notes below)*
+## Part 2 — live fuel moisture from a greenness curve ✅
 
 Live moisture was a single scenario scalar applied to both live classes. The
 science ships it as a **two-column ladder** keyed on how cured the herbaceous
@@ -112,5 +110,45 @@ lever than moisture. The Anderson 13 models are static and carry no transfer, so
 implementing only the moisture half under the name `curing` would name the knob
 after the effect it does not have. Load transfer stays a recorded deferral.
 
-`liveMoisture` keeps working and keeps winning when given, so every existing
-preset and pinned test is untouched; `greenness` is opt-in.
+### What changed
+
+- New pure module `src/sim/moistureScenarios.ts` — the four dead triples and the
+  four live pairs as data, plus `liveMoistureFromGreenness`. Named after the
+  BehavePlus file it transcribes so the two can be diffed by eye.
+- `rothermelFireModel.ts` — `greenness`, `liveHerbMoisture`, `liveWoodyMoisture`.
+  Precedence is explicit per class → the curve → `liveMoisture` → the 100 %
+  default, resolved once in the constructor into the same `BedMoisture` record
+  Part 1 introduced. When nothing asks for a split the record stays `undefined`
+  and assembled beds are byte-identical to the pre-split model, which is what
+  keeps every pinned test passing.
+- `grass-valley` now says `greenness: 0` instead of `liveMoisture: 0.6`. That
+  preset's fuels are FM3 and FM9 (no live load at all) plus FM5 (live woody only,
+  which the fully-cured row also puts at 60 %), so the run is byte-identical —
+  verified directly, not assumed. The change is that the preset now says *why*
+  0.6: the grass is cured.
+
+`liveMoisture` keeps working and keeps winning over the default, so every other
+preset and every pinned test is untouched; `greenness` is opt-in.
+
+### Not done, and deliberately
+
+**Herbaceous load transfer.** As grass cures, BehavePlus moves a fraction of the
+live-herbaceous load into the dead 1-hr class. That is curing's *dominant* effect
+— dead fine fuel is what carries fire — and it is bigger than the moisture change
+above. It is not implemented because the Anderson 13 models are static: transfer
+belongs to the Scott & Burgan 40 dynamic models, so adding it means adding a
+catalogue, not tweaking a formula. Recorded in `docs/science.md` §9.
+
+**A green-season preset.** Nothing in the shipped presets exercises a high
+greenness, so the spring-flush-vs-late-summer contrast is available to a scenario
+author but not demonstrated in the menu. A paired preset is the obvious follow-up.
+
+## Where this leaves `docs/science.md` §9
+
+Of the four gaps that section listed before Phase 9, two are closed (§3a, §3b) and
+two remain: a smooth wavefront (the raster route is spent — the next step is
+FARSITE-style Huygens expansion behind the same `IFireModel` seam) and
+intensity-driven ember **loft distance** (launch rate already reads intensity;
+how far a brand carries is still wind × canopy × crown tier). §9 also gained three
+new, smaller entries from this phase: spatially varying coarse dead moisture,
+coarse dead moisture dynamics, and herbaceous load transfer.
