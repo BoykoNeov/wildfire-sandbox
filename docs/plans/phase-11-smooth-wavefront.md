@@ -151,10 +151,51 @@ xt = ( f²·v·p − h²·u·q) / D + c·u
 yt = (−f²·u·p − h²·v·q) / D + c·v
 ```
 
-with `f = flank` (semi-minor `b`), `h = head` (semi-major `a`) and `c` the focus
-offset, all as derived in §2b. Zero `sin`/`cos`/`atan2` per vertex per substep —
-which matters, because this runs per marker per substep rather than per cell per
-tick.
+**`h`, `f` and `c` are ellipse *dimensions*, not rates.** They are the values
+`ellipse()` leaves in its members *after* the reassignment in §2b, which is easy
+to miss because they reuse the names `head`/`flank`/`back`. With `R` the
+Rothermel head rate and `B = R/HB` the backing rate:
+
+```
+h = (R + B)/2          semi-major a
+f = (R + B)/(2·LB)     semi-minor b
+c = (R − B)/2          focus offset
+```
+
+Plugging the raw Rothermel head rate in as `h` produces something that still
+looks like a fire, which is why this is spelled out rather than left implied.
+
+#### The handedness and winding trap
+
+FARSITE's `(x = sin θ, y = cos θ)` is **compass azimuth: x east, y north.** This
+repo's raster is row-major with `y = (i/width)|0`, and `src/render/overlay.ts:414`
+takes `hy = -1` as north — so **repo `+y` is south**, the opposite sense. The
+substitution above is self-consistent *provided* the tangent `(x_s, y_s)` and the
+head vector `(u, v)` are both expressed in the repo frame, but `q = x_s·v − y_s·u`
+is a cross product: **its sign flips under that reflection**, and so does the
+question of which side of the tangent is "outward". That sign is cancelled — or
+doubled — by the perimeter's **winding order**, which FARSITE fixes by taking
+`xdiff = xptl − xptn` (previous minus next, `fsxwmech.cpp:168`) and tracks
+explicitly as an inward/outward flag (`GetInout(CurrentFire) == 2`, in the same
+block quoted for the 1.4 divisor in D7).
+
+So handedness and winding must be pinned **together**, and this document does not
+assert a sign it has not run. Phase 11 fixes the convention as: **vertices stored
+counter-clockwise in screen coordinates (x right, y down)**, with the sign of `q`
+chosen so a small ring under zero wind *expands*. Two Stage-1 gates verify it, and
+neither is optional:
+
+- **Expansion test.** A seed ring under zero wind must grow in area, not shrink.
+  Catches the sign outright.
+- **Oblique-wind axis test.** With wind ~30° off-axis, the measured long axis of
+  the burn must match `headUx/headUy` from `windSlopeResultant` to within a degree
+  or two. This is the one that matters: **a mirrored ellipse has identical
+  anisotropy, identical LB at every wind speed and the same 11.25° radius**, so
+  every number in §7 passes while the fire runs off in the wrong direction. The
+  LB series cannot discriminate; only an off-axis direction check can.
+
+Zero `sin`/`cos`/`atan2` per vertex per substep — which matters, because this runs
+per marker per substep rather than per cell per tick.
 
 ---
 
@@ -210,6 +251,14 @@ head rate, head direction, eccentricity, intensity and crown type. Pure
 refactor — **no behaviour change** — gated on the `timber-crown-run` golden and
 the whole suite being byte-identical before a line of Huygens code is written.
 
+**The same stage splits the options type.** `spreadShape` and `spreadTemplate`
+are raster-only knobs, but they live in `RothermelFireModelOptions`, which
+`Scenario.fireModel` is typed off (`src/scenario/scenario.ts:80`). The Huygens
+model wants the *shared* knobs — `windReference`, `canopy`, the moisture fields,
+`dynamicHerbLoad` — and neither of those two. Split the type into shared and
+raster-only halves here, under the same byte-identical gate; left to Stage 1 it
+lands as unplanned type churn in the middle of the interesting work.
+
 ### D3 — Reuse `fireEllipse.ts` unmodified; add only the vector-form Richards step
 
 Per §2b the ellipse maths is already the same maths. A new pure module
@@ -264,9 +313,10 @@ exactly this reasoning for `intensity[i] === 0` on an externally-lit cell.
 ### D6 — Merging is in scope, and it is not optional
 
 With intensity-driven spotting mounted (§6) the shipped presets throw brands
-300–1300 m. `timber-crown-run` will produce multi-perimeter merges inside the
-first simulated minute. A Huygens front that cannot merge is not usable on the
-presets that already exist. FARSITE's machinery:
+300–1300 m, so `timber-crown-run` carries **multiple concurrent perimeters from
+the first ember**, and they merge once they have grown together — minutes to
+tens of minutes, not immediately. Either way a Huygens front that cannot merge is
+not usable on the presets that already exist. FARSITE's machinery:
 `Intersections::FindFirePerimeter` / `FindOuterFirePerimeter` and
 `StandardizePolygon::Cross` in `newclip.cpp`, `PostFrontal::MergeFireRings` in
 `fsxpfront.cpp`.
@@ -364,14 +414,22 @@ profile` within noise of the current 1.53 ms/step.
 **Stage 1 — one perimeter, no barriers, no merging.**
 Richards advance + substepping + density control + rasterisation. Flat, uniform
 fuel, single ignition.
-*Gate:* windless anisotropy and the wind LB series (§7) measured on a harness in
-`M:\claud_projects\temp\phase11\`; `tests/spread-ros.test.ts` — the planar front
-still runs at the analytic Rothermel rate.
+*Gate:* the **expansion test** and the **oblique-wind axis test** from §2c — both
+of them, because the LB series cannot see a mirrored ellipse; then windless
+anisotropy and the wind LB series (§7) measured on a harness in
+`M:\claud_projects\temp\phase11\`; and `tests/spread-ros.test.ts` — the planar
+front still runs at the analytic Rothermel rate.
 
 **Stage 2 — barriers, external ignitions, merging (D4, D5, D6).**
 *Gate:* `tests/suppression.test.ts` passes unmodified on the Huygens path (the
 line holds, the gap leaks); `tests/spotting.test.ts` passes; `timber-crown-run`
-runs a simulated hour without producing a degenerate perimeter.
+runs a simulated hour without producing a degenerate perimeter. Plus the two
+**intensity-attribution** checks §5c calls for, which are the only guard on the
+one failure in this phase that does not error:
+- after a merge, every cell inside the merged region carries a **defined**
+  intensity (nothing swallowed silently at zero);
+- on an elongated fire, cells ignited by a **flank** segment record lower
+  intensity than cells ignited at the head.
 
 **Stage 3 — crossover/loop removal (D7), and the decision on the default.**
 *Gate:* a front driven around a nonburnable island produces a valid simple
@@ -392,6 +450,9 @@ written up as-measured whether or not they hold:
 | LB error at 1 / 1.5 / 2 / 2.5 / 3 m/s | +4 / +3 / +7 / +8 / +12 % | within **±5 %** across the series |
 | LB error at 4 / 5 m/s | +4 / **+28 %** | **< 10 %** at 5 m/s |
 | Radius at 11.25°, windless | 0.940 of due-east | **≥ 0.99** |
+
+**Every row of this table is blind to a mirrored ellipse** (§2c). The direction
+checks are not part of it and are not substitutable by it.
 
 And the consequence nobody will like: the raster **understates** burned area
 (§9), so a smooth front burns **more**. Predicted `timber-crown-run` burned area
@@ -427,11 +488,13 @@ path, and D8's burnable-enclave gap opens in its place.
 
 ## 9. Steps
 
-1. Stage 0: extract `src/sim/surfaceBehaviour.ts` from `RothermelFireModel`;
-   prove byte-identical.
+1. Stage 0: extract `src/sim/surfaceBehaviour.ts` from `RothermelFireModel` and
+   split `RothermelFireModelOptions` into shared / raster-only; prove
+   byte-identical.
 2. `src/sim/richards.ts` — §2c in vector form, pure — plus
    `tests/richards.test.ts` against the analytic ellipse (a point ignition under
-   steady wind must trace `R(θ) = R_head·(1 − E)/(1 − E·cos θ)`).
+   steady wind must trace `R(θ) = R_head·(1 − E)/(1 − E·cos θ)`), **and the
+   handedness/winding pair pinned by the expansion and oblique-axis tests**.
 3. `src/sim/perimeter.ts` — pure polygon geometry: density control, area,
    point-in-polygon (crossing count, as `Rasterize::Overlap`), segment
    intersection (`StandardizePolygon::Cross`). `tests/perimeter.test.ts`.
