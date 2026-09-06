@@ -63,9 +63,10 @@ export interface Rgb {
  * **Per-world render cache.** Hillshade, contour lines and the per-cell texture
  * hash are static until someone paints elevation, so they are computed once into
  * a {@link TerrainCache} and reused every frame (this halved the frame cost at
- * 256²). The terrain view's *unburned ground colour* is cached there too and
- * rewritten one row band per frame, so a frame starts from a memcpy and only
- * repaints what animates (fire, water, retardant). The cache is keyed by world in
+ * 256²). The *unburned cell colour* of whichever view is mounted is cached
+ * there too and rewritten one row band per frame, so a frame starts from a
+ * memcpy and only repaints what animates (fire, water, retardant). The cache is
+ * keyed by world in
  * a `WeakMap`, so `renderRGBA`'s signature is unchanged and the headless exporter
  * gets it for free; the editor calls {@link invalidateTerrainShading} after a
  * stroke that changes elevation or fuel, {@link invalidateGroundColours} after
@@ -134,11 +135,17 @@ interface TerrainCache {
   /** `hash01(i)` per cell. */
   noise: Float32Array;
   /**
-   * The terrain view's unburned ground colour (fuel × moisture × shade, before
-   * retardant), RGBA per cell. Refreshed one row band per frame — see
-   * {@link refreshGround}.
+   * The mounted view's unburned cell colour (terrain: fuel × moisture × shade;
+   * a data view: that view's ramp × shade — both *before* retardant), RGBA per
+   * cell. Refreshed one row band per frame — see {@link refreshGround}.
    */
   ground: Uint8ClampedArray;
+  /**
+   * Which {@link ViewMode} {@link ground} currently holds. ONE buffer, not one
+   * per view: switching views is a human click, so paying a single full rewrite
+   * then is far cheaper than 6 MB of buffers at 512² and six invalidation paths.
+   */
+  groundView: ViewMode;
   /** 1 where a cell is water (nonburnable below {@link WATER_MAX_ELEV}) — it shimmers, so it is never cached. */
   water: Uint8Array;
   /** False until {@link ground} has been filled once (a fresh or repainted world). */
@@ -176,6 +183,7 @@ function cacheFor(world: WorldState): TerrainCache {
       edgeCount: 0,
       frameCounter: 0,
       ground: new Uint8ClampedArray(n * 4),
+      groundView: 'terrain',
       water: new Uint8Array(n),
       groundValid: false,
       groundBand: 0,
@@ -222,9 +230,9 @@ export function invalidateTerrainShading(world: WorldState): void {
 }
 
 /**
- * Mark a world's cached ground colours stale — call after painting `moisture`,
- * which the band refresh would otherwise pick up over the next few frames (a
- * drag-paint would appear in stripes). Cheaper than
+ * Mark a world's cached unburned-cell colours stale — call after painting
+ * `moisture` or `canopy`, which the band refresh would otherwise pick up over
+ * the next few frames (a drag-paint would appear in stripes). Cheaper than
  * {@link invalidateTerrainShading}: the hillshade is kept.
  */
 export function invalidateGroundColours(world: WorldState): void {
@@ -451,23 +459,32 @@ function terrainRGB(
 }
 
 /**
- * How many row bands {@link refreshGround} spreads a full ground rewrite over.
+ * How many row bands {@link refreshGround} spreads a full rewrite over.
  * Moisture moves by a byte every few seconds, so a cell's colour may lag by up
  * to this many frames (~0.13 s at 60 fps) — invisible, and the editor's paint
  * calls {@link invalidateGroundColours} for an immediate rewrite.
+ *
+ * The one *instant* moisture change in the sim is a retardant drop, and it lands
+ * exactly where `retardant > 0` — cells the frame loop already repaints live on
+ * every view that shows retardant. So the drop is never the thing that lags,
+ * even on the moisture view, where moisture is the whole signal.
  */
 const GROUND_BANDS = 8;
 
 /**
- * Refresh the cached unburned-ground colours (the terrain view's hot path:
- * fuel × moisture × shade for nearly every cell, every frame). One row band per
- * frame, or the whole map when the cache is cold — after that the frame loop
+ * Refresh the mounted view's cached unburned-cell colours — every view's hot
+ * path, since on all six it is nearly every cell, every frame (terrain:
+ * fuel × moisture × shade; a data view: that view's ramp × shade). One row band
+ * per frame, or the whole map when the cache is cold — after that the frame loop
  * starts from a memcpy of {@link TerrainCache.ground} and only repaints the
  * cells that actually animate (fire, water shimmer, retardant).
  */
-function refreshGround(world: WorldState, cache: TerrainCache): void {
+function refreshGround(world: WorldState, cache: TerrainCache, view: ViewMode): void {
   const { width, height, layers, clock } = world;
-  const full = !cache.groundValid;
+  // A view switch leaves the buffer holding another view's colours: a cold
+  // start, exactly like a fresh or repainted world.
+  const full = !cache.groundValid || cache.groundView !== view;
+  cache.groundView = view;
   const y0 = full ? 0 : Math.floor((cache.groundBand * height) / GROUND_BANDS);
   const y1 = full ? height : Math.floor(((cache.groundBand + 1) * height) / GROUND_BANDS);
   const ground = cache.ground;
@@ -478,16 +495,33 @@ function refreshGround(world: WorldState, cache: TerrainCache): void {
   const elev = layers.elevation.data;
   const time = clock.time;
   const rgb: Rgb = { r: 0, g: 0, b: 0 };
-  for (let i = y0 * width, end = y1 * width; i < end; i++) {
-    // `time` only feeds the water shimmer, and water is repainted live every
-    // frame — nothing time-dependent survives in this buffer.
-    terrainRGB(fuel[i], moist[i], elev[i], shade[i], noise[i], time, rgb);
-    clampRgb(rgb);
-    const p = i * 4;
-    ground[p] = rgb.r | 0;
-    ground[p + 1] = rgb.g | 0;
-    ground[p + 2] = rgb.b | 0;
-    ground[p + 3] = 255;
+  const start = y0 * width;
+  const end = y1 * width;
+  // The view is hoisted out of the loop: one branch per band, not per cell.
+  if (view === 'terrain') {
+    for (let i = start; i < end; i++) {
+      // `time` only feeds the water shimmer, and water is repainted live every
+      // frame — nothing time-dependent survives in this buffer.
+      terrainRGB(fuel[i], moist[i], elev[i], shade[i], noise[i], time, rgb);
+      clampRgb(rgb);
+      const p = i * 4;
+      ground[p] = rgb.r | 0;
+      ground[p + 1] = rgb.g | 0;
+      ground[p + 2] = rgb.b | 0;
+      ground[p + 3] = 255;
+    }
+  } else {
+    // No data view has a time term (nothing on them shimmers), so their cached
+    // colour is exact until a layer they read changes under the band refresh.
+    for (let i = start; i < end; i++) {
+      dataView(world, i, view, fuel[i], shade[i], rgb);
+      clampRgb(rgb);
+      const p = i * 4;
+      ground[p] = rgb.r | 0;
+      ground[p + 1] = rgb.g | 0;
+      ground[p + 2] = rgb.b | 0;
+      ground[p + 3] = 255;
+    }
   }
   cache.groundValid = true;
   cache.groundBand = (cache.groundBand + 1) % GROUND_BANDS;
@@ -936,11 +970,14 @@ export function renderRGBA(
   // Already-clamped colours are truncated with `| 0` before every store, so the
   // typed-array write is a plain byte write (a float store into a
   // Uint8ClampedArray rounds and clamps a second time).
+  // Every view starts from the cached unburned colour (one memcpy) and repaints
+  // only what animates. On terrain that is fire, the water shimmer and
+  // retardant; on a data view nothing shimmers, so it is fire and retardant
+  // alone — and on `intensity`, which never tints for slurry, fire alone.
+  // Nearly every cell is skipped outright.
+  refreshGround(world, cache, view);
+  rgba.set(cache.ground);
   if (view === 'terrain') {
-    // Start from the cached ground (one memcpy) and repaint only what animates:
-    // fire, the water shimmer and retardant. Nearly every cell is skipped outright.
-    refreshGround(world, cache);
-    rgba.set(cache.ground);
     const water = cache.water;
     for (let i = 0; i < n; i++) {
       const state = fire[i];
@@ -964,8 +1001,18 @@ export function renderRGBA(
       rgba[p + 3] = 255;
     }
   } else {
+    // `intensity` is the one view `cellRGB` does not tint for retardant, so on
+    // it an unburned cell is ALWAYS the cached colour — the same guard, mirrored.
+    const tintsRetardant = view !== 'intensity';
     for (let i = 0; i < n; i++) {
-      if (fire[i] === FireState.Burned && view !== 'intensity') {
+      const state = fire[i];
+      if (state === FireState.Unburned) {
+        const ret = retardantL[i];
+        if (ret === 0 || !tintsRetardant) continue; // the cached colour is already right
+        dataView(world, i, view, fuel[i], shade[i], rgb);
+        blendRetardant(rgb, ret);
+        clampRgb(rgb);
+      } else if (state === FireState.Burned && tintsRetardant) {
         const edge = scarEdge(world, i % width, (i / width) | 0);
         if (edge !== 0) cache.edge[edgeCount++] = i;
         cellRGB(world, i, rgb, view, shade[i], noise[i], edge);
