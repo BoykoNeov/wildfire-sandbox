@@ -19,7 +19,25 @@ claim here can be checked in under a minute.
 | Outputs | Rate of spread (ft/min → m/s at the boundary), reaction intensity, Byram fireline intensity `I_B = I_R·R·τ/60`, flame length `L = 0.45·I_B^0.46`, residence time `τ = 384/σ`. |
 | Units | Native imperial inside (every published constant was fitted that way), converted once at the module boundary (plan §D2). |
 | Cross-checks | `tests/rothermel.test.ts` (emxsys/behave regression values), `tests/rothermel-twocategory.test.ts` (verbatim port of firelab/behave `surfaceFuelbedIntermediates.cpp` at zero wind/slope, hand-worked live M_x). |
-| Performance | `prepareFuelBed` (everything independent of wind/slope) runs once per front cell; `spreadFromIntermediates` (the φ_w / φ_s half) once per neighbour direction. |
+| Performance | `prepareFuelBed` (everything independent of wind/slope) runs once per front cell — cached by fuel × dead-moisture byte. Under the default elliptical law (§1a) the wind/slope half also runs **once per cell**, not once per direction. |
+
+## 1a. Directional spread — the fire ellipse (Anderson 1983; Alexander 1985)
+
+Rothermel's `R` is a *head-fire* rate: the speed in the single direction of
+maximum spread. Everything else comes from an ellipse.
+
+| | |
+|---|---|
+| Module | `src/sim/fireEllipse.ts` (pure), applied in `src/sim/rothermelFireModel.ts` |
+| Direction of max spread | Wind and slope combine **as vectors, once per cell**: `R_head = R₀ + \|R₀·φ_w·ŵ + R₀·φ_s·ŝ\|`, its azimuth being the head direction. Note `R₀ + \|v\|`, not `R₀·(1 + φ_w + φ_s)` — a cross-slope wind yields less than the scalar sum. Port of `SurfaceFire::calculateDirectionOfMaxSpread`. |
+| Effective wind | Back-solved from the resultant by inverting Rothermel eq. (47): `U = ((φ_eff·(β/β_op)^E)/C)^(1/B)` [ft/min]. Slope steepens the fire exactly as an equivalent wind would. `SurfaceFire::calculateEffectiveWindSpeed`. |
+| Length-to-breadth | `LB = 0.936·e^(0.1147·U) + 0.461·e^(−0.0692·U) − 0.397`, U in mi/h, capped at 8 (Anderson 1983; `FireSize::calculateSurfaceFireLengthToWidthRatio`). Crown fire uses Rothermel (1991) eq. 10, `LB = 1 + 0.125·U₂₀`. |
+| Rate at an angle | `E = √(LB²−1)/LB`; `R(θ) = R_head·(1−E)/(1−E·cos θ)` — the ellipse about its **focus**, which is the right form for a front expanding from an ignition point (`SurfaceFire::calculateSpreadRateAtVector`, `FromIgnitionPoint`). Backing rate falls out as `R_head·(1−E)/(1+E)`. BehavePlus's other form (Catchpole et al. 1982) gives the rate normal to the perimeter and is not what an arrival-time CA wants. |
+| Slope | A per-cell gradient (central differences on `elevation`, edge-clamped), not a per-ray rise: φ_s is a property of the site, and the vector sum needs one slope vector per cell. |
+| Crown coupling | Evaluated **per direction** off the direction's own elliptical intensity, so a fire can crown at the head and stay a surface fire on the flanks. The FM10 proxy rate rides its own (rounder) crown ellipse about the same head direction. |
+| Expect wider fires, not just longer ones | Every dimension of the ellipse scales with `R_head`, so the flank rate `R_head·(1−E)` comes out at **4–6× R₀** for a 2–3 m/s midflame wind. That is the model, not a bug: Anderson's LB is fitted to *observed* fire shapes, in which a wind-driven fire's flanks outrun a windless fire. Before Phase 8 the flanks were pinned at R₀ and the shape barely responded to wind at all. |
+| Cross-checks | `tests/spread-shape.test.ts` — measured length-to-breadth against the analytic LB, measured backing/heading against `(1−E)/(1+E)`, and the no-wind degenerate case (`E = 0 ⇒ R(θ) = R₀`) matching the old per-direction law exactly. |
+| Escape hatch | `spreadShape: 'perDirection'` restores the Phase-2 law (project the wind onto each ray). Kept for comparison; it is not in any source and lets a fire back into the wind at the full no-wind R₀. |
 
 ## 2. Fuel — Anderson 13 (1982)
 
@@ -94,10 +112,33 @@ upslope only.
 
 ## 9. What is *not* modelled (and why)
 
-- **Elliptical / Huygens wavefront propagation.** The front is an 8-neighbour
-  arrival-time CA: exact along the eight rays, ~8% slow between them, so
-  perimeters are octagonal rather than elliptical. FARSITE-style Huygens
-  expansion is a later fire model behind the same seam (handoff §4.2).
+- **A smooth wavefront.** The *directional law* is now elliptical (§1a), but
+  **propagation** is still an 8-neighbour arrival-time CA, so the burned region
+  is the convex polygon spanned by eight rays rather than a smooth curve. Two
+  measured consequences (`tests/spread-shape.test.ts`,
+  `docs/plans/phase-8-elliptical-spread.md`):
+  - *Windless:* the fire is a rounded square, +8.9 % on the diagonals and −5.9 %
+    at 11.25°, about 1.16 max/min. (Not the textbook weighted-8 octagon: the
+    progress accumulator beats the graph shortest path on the diagonals, because
+    a cell accumulating from its diagonal predecessor switches to the faster
+    cardinal rate as soon as that neighbour ignites.)
+  - *Windy:* the ellipse's widest point sits ~18° off the head, between the 0°
+    and 45° rays, so the hull cuts the corner and the fire comes out too narrow.
+    Measured length-to-breadth runs +3–12 % high up to LB ≈ 2, +39 % at LB 2.5
+    and +61 % at LB 3.2. The head (a cardinal ray) and the backing rate are
+    accurate; the error is all flank width, and it *understates* burned area.
+  The named next step is a **16-neighbour template** (adding the ±26.57° / ±63.43°
+  knight moves, weights 1/√2/√5). It is not done because a √5 move steps *over* a
+  1-cell containment line, which would silently break the Phase-4 suppression
+  doctrine unless every long move also tested its intermediate cells for
+  burnability — and it widens the candidate dilation from 3×3 to 5×5, growing the
+  per-tick candidate list. FARSITE-style Huygens expansion (marker points rather
+  than a raster) remains a later fire model behind the same seam (handoff §4.2).
+- **Rothermel's effective wind-speed limit.** BehavePlus optionally caps the
+  effective wind at `0.9·I_R` (`SurfaceFire::calculateWindSpeedLimit`), which
+  also clamps φ_s. Not applied here: it is a Rothermel-domain constraint on the
+  head rate, orthogonal to fire shape, and turning it on would move head rates as
+  well. Deferred rather than forgotten.
 - **Per-size-class dead moisture.** One dead moisture (the 1-hr class) feeds all
   dead size classes. A 10-hr / 100-hr lag is a model-side tweak to
   `deadFuelBed` (plan §D6 item 1), still deferred.

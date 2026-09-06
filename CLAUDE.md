@@ -124,11 +124,18 @@ wind streamlines; the wind button cycles off → arrows → streamlines), D ✅
 (`?size=` maps, 64–1024, after extending the unburned-colour cache to all six
 views: the data views went 12–15 → 2.8–3.7 ms/frame at 512²) and H ✅ (contours
 toggle, view state in the URL, profiler budget line). G (a WebGL renderer) is
-written down but **not needed** — nothing misses the frame budget at 512².
-Next: the honest gaps in `docs/science.md` §9 (Huygens wavefront, per-class dead
-moisture, live-moisture curve, intensity-driven ember loft), then the additive
-future phases (WUI structures → industrial). Each phase must be runnable and
-verifiable before the next.
+written down but **not needed** — nothing misses the frame budget at 512². →
+**P8 elliptical fire shape** ✅ (`docs/plans/phase-8-elliptical-spread.md`): wind
+and slope now combine **once per cell, as vectors**, into a head rate and a
+direction of maximum spread, and every other direction is read off the
+Anderson-1983 spread ellipse at its focus. Expect visibly different fires than in
+Phase 7 — longer, much slower at the back, and **wider at the flanks** (the flank
+rate is 4–6× R₀, not R₀). One Rothermel evaluation per cell replaces eight.
+`spreadShape: 'perDirection'` restores the Phase-2 law.
+Next: the remaining honest gaps in `docs/science.md` §9 (a smooth wavefront — the
+16-neighbour template, then Huygens; per-class dead moisture; live-moisture curve;
+intensity-driven ember loft), then the additive future phases (WUI structures →
+industrial). Each phase must be runnable and verifiable before the next.
 
 One scope note carried by `?size=`: the terrain generator samples in normalized
 coordinates, so a bigger map is the same landscape spread over more ground —
