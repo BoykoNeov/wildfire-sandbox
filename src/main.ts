@@ -1,4 +1,5 @@
 import { CanvasRenderer } from './render/canvasRenderer';
+import { VIEW_MODES, type ViewMode } from './render/palette';
 import {
   drawBrushCursor,
   drawWindOverlay,
@@ -16,7 +17,7 @@ import {
 } from './scenario/scenario';
 import { findPreset, DEFAULT_PRESET_ID, PRESETS } from './scenario/presets';
 import { computeStats, emptyStats } from './sim/stats';
-import { Hud } from './ui/hud';
+import { Hud, type HudInitialState } from './ui/hud';
 
 const DT = 1; // seconds of simulated time per step
 
@@ -40,9 +41,45 @@ const preset = Number.isFinite(requested) && requested > 0
 const loaded = loadScenario(preset);
 const { world, sim, crew, engine, aircraft, burnableCells } = loaded;
 
+// The view state is a URL parameter like the scenario is, so a link reproduces
+// the picture and not just the run: `?view=moisture&wind=streamlines&smoke=0`.
+// Anything absent or unrecognised falls back to the default, so a hand-typed URL
+// degrades to the normal page rather than an empty one.
+const flag = (key: string, fallback: boolean): boolean => {
+  const v = params.get(key);
+  return v === null ? fallback : v !== '0' && v !== 'false';
+};
+const askedView = params.get('view');
+const askedWind = params.get('wind');
+const initial: HudInitialState = {
+  timeScale: preset.timeScale ?? 120, // sim-seconds per real second; 0 = paused
+  view: VIEW_MODES.some((v) => v.id === askedView) ? (askedView as ViewMode) : 'terrain',
+  wind: askedWind === 'arrows' || askedWind === 'streamlines' ? askedWind : 'off',
+  smoke: flag('smoke', true),
+  spotFlash: flag('flash', true),
+  contours: flag('contours', true),
+};
+
+/**
+ * Write one view parameter into the address bar without reloading the page
+ * (`replaceState`, never `assign` — a reload would rebuild the world and restart
+ * the fire). Defaults are removed rather than written, so the plain URL stays
+ * plain until you actually change something.
+ */
+function setParam(key: string, value: string | null): void {
+  const url = new URL(window.location.href);
+  if (value === null) url.searchParams.delete(key);
+  else url.searchParams.set(key, value);
+  window.history.replaceState(null, '', url.toString());
+}
+
 // Rendering reads world state but never drives the sim.
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const renderer = new CanvasRenderer(canvas, world);
+renderer.view = initial.view;
+renderer.smoke = initial.smoke;
+renderer.spotFlash = initial.spotFlash;
+renderer.contours = initial.contours;
 
 // A screen-resolution overlay canvas for crisp vector overlays: wind arrows,
 // unit markers, the brush / order cursor. Cleared and redrawn every frame.
@@ -77,16 +114,18 @@ const command =
 
 // Run state owned by the page: pacing, view mode, overlays. The HUD reports
 // control changes through callbacks and formats stats each frame (Phase-5a).
-let timeScale = preset.timeScale ?? 120; // sim-seconds per real second; 0 = paused
-let windOverlay: WindOverlayMode = 'off';
+let timeScale = initial.timeScale;
+let windOverlay: WindOverlayMode = initial.wind;
 // Built once, not per frame — the streamlines only mean anything because they
 // carry their own trail state between frames. A scenario change is a full page
 // reload, so there is no re-init path to keep in sync.
 const windParticles = new WindParticles(world);
-const hud = new Hud(PRESETS, preset, timeScale, {
+const hud = new Hud(PRESETS, preset, initial, {
   onScenario: (id) => {
     // Rebuilding world + systems + editor + command shell + renderer is exactly a
     // fresh page load with the id in the URL — so do that (the seed reproduces it).
+    // Every other parameter is already in the address bar, so the reload keeps
+    // the map size and the view you were looking at.
     const url = new URL(window.location.href);
     url.searchParams.set('scenario', id);
     window.location.assign(url.toString());
@@ -96,15 +135,23 @@ const hud = new Hud(PRESETS, preset, timeScale, {
   },
   onView: (mode) => {
     renderer.view = mode;
+    setParam('view', mode === 'terrain' ? null : mode);
   },
   onWindOverlay: (mode) => {
     windOverlay = mode;
+    setParam('wind', mode === 'off' ? null : mode);
   },
   onSmoke: (on) => {
     renderer.smoke = on;
+    setParam('smoke', on ? null : '0');
   },
   onSpotFlash: (on) => {
     renderer.spotFlash = on;
+    setParam('flash', on ? null : '0');
+  },
+  onContours: (on) => {
+    renderer.contours = on;
+    setParam('contours', on ? null : '0');
   },
 });
 

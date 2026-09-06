@@ -18,6 +18,8 @@ export class CanvasRenderer implements IRenderer {
   smoke = true;
   /** Flash fresh isolated ignitions (embers landing, clicks, a backburn going in). */
   spotFlash = true;
+  /** Draw the 50 m index contour lines. */
+  contours = true;
 
   constructor(canvas: HTMLCanvasElement, world: WorldState) {
     canvas.width = world.width;
@@ -40,7 +42,12 @@ export class CanvasRenderer implements IRenderer {
   }
 
   render(world: WorldState): void {
-    renderRGBA(world, this.image.data, { view: this.view, smoke: this.smoke, spotFlash: this.spotFlash });
+    renderRGBA(world, this.image.data, {
+      view: this.view,
+      smoke: this.smoke,
+      spotFlash: this.spotFlash,
+      contours: this.contours,
+    });
     this.ctx.putImageData(this.image, 0, 0);
   }
 }

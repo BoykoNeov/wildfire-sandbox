@@ -1,8 +1,9 @@
 /**
  * Headless profiler — runs a preset through the real pipeline and reports where
  * the time goes: ms/step per system (the sim side) and ms/frame per view for the
- * shared `renderRGBA` composition (the render side). The numbers are what the
- * browser frame loop pays, minus `putImageData` and the DOM.
+ * shared `renderRGBA` composition (the render side), plus the frame budget that
+ * leaves. The numbers are what the browser frame loop pays, minus `putImageData`
+ * and the DOM.
  *
  * Run: npm run profile [-- <preset-id> [steps] [--size=N]]  (default: shifting-winds, 1500)
  *      npm run profile -- timber-crown-run 3000
@@ -69,9 +70,29 @@ console.log('\nsim (ms/step)');
 for (const [name, ms] of perSystem) console.log(`  ${name.padEnd(28)} ${(ms / STEPS).toFixed(3)}`);
 console.log(`  ${'TOTAL'.padEnd(28)} ${(total / STEPS).toFixed(3)}`);
 
+/**
+ * What is actually left to draw with. The browser paces by wall clock, so a
+ * preset running at `timeScale` sim-seconds per real second owes `timeScale/60`
+ * steps in every 16.67 ms frame — the sim's share of the budget is fixed by the
+ * SPEED the scenario asks for, not by the step cost alone. Whatever is left is
+ * what a view has to compose in, and the render lines below are marked against
+ * it.
+ */
+const FPS = 60;
+const FRAME_MS = 1000 / FPS;
+const timeScale = scenario.timeScale ?? 120;
+const stepsPerFrame = timeScale / FPS;
+const simMsPerFrame = (total / STEPS) * stepsPerFrame;
+const renderBudget = FRAME_MS - simMsPerFrame;
+console.log(`\nbudget (${FPS} fps = ${FRAME_MS.toFixed(2)} ms/frame; ` +
+  `timeScale ${timeScale}x = ${stepsPerFrame.toFixed(1)} steps/frame)`);
+console.log(`  ${'sim per frame'.padEnd(28)} ${simMsPerFrame.toFixed(3)}`);
+console.log(`  ${'left to render in'.padEnd(28)} ${renderBudget.toFixed(3)}` +
+  (renderBudget <= 0 ? '   <- the sim alone misses 60 fps at this speed' : ''));
+
 const rgba = new Uint8ClampedArray(world.width * world.height * 4);
 const FRAMES = 120;
-console.log(`\nrender (ms/frame, ${FRAMES} frames)`);
+console.log(`\nrender (ms/frame, ${FRAMES} frames; "ok" = fits the budget above)`);
 function timeView(label: string, view: (typeof VIEW_MODES)[number]['id'], smoke?: boolean): void {
   for (let f = 0; f < 30; f++) renderRGBA(world, rgba, { view, smoke }); // JIT warm-up
   const t0 = performance.now();
@@ -79,7 +100,10 @@ function timeView(label: string, view: (typeof VIEW_MODES)[number]['id'], smoke?
     world.clock.time += 0.016; // animate the flicker so the path is the live one
     renderRGBA(world, rgba, { view, smoke });
   }
-  console.log(`  ${label.padEnd(28)} ${((performance.now() - t0) / FRAMES).toFixed(3)}`);
+  const ms = (performance.now() - t0) / FRAMES;
+  const verdict =
+    renderBudget <= 0 ? '' : ms <= renderBudget ? '  ok' : `  OVER by ${(ms - renderBudget).toFixed(2)}`;
+  console.log(`  ${label.padEnd(28)} ${ms.toFixed(3)}${verdict}`);
 }
 for (const v of VIEW_MODES) {
   timeView(v.id, v.id);

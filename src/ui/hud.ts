@@ -4,6 +4,7 @@ import type { Engine } from '../sim/engine';
 import type { Aircraft } from '../sim/aircraft';
 import { compassToward, formatDuration, type SimStats } from '../sim/stats';
 import {
+  CONTOUR_INTERVAL_M,
   VIEW_MODES,
   canopyRamp,
   elevationRamp,
@@ -18,10 +19,14 @@ import type { WindOverlayMode } from '../render/overlay';
  * Phase-5a HUD (`docs/plans/phase-5-polish.md` decision #1): a browser-only DOM
  * **reader**. It formats `SimStats` + agent getters each frame and owns the run
  * controls (scenario, speed, view, wind overlay — off / arrows / streamlines —
- * smoke, spot flash). It writes nothing into
+ * smoke, spot flash, contours). It writes nothing into
  * world state; control changes are reported through callbacks that `main.ts`
  * wires to the frame loop / renderer. Like `SuppressionCommand` it is outside
  * the determinism test.
+ *
+ * It does not read or write the URL either: it takes the state the page starts
+ * in ({@link HudInitialState}) and reports every change, and `main.ts` is the one
+ * place that turns those into query parameters.
  *
  * The **legend** under the view picker is drawn from the palette's own exported
  * ramp functions, so it can never drift from what the map shows.
@@ -34,6 +39,21 @@ export interface HudCallbacks {
   onWindOverlay(mode: WindOverlayMode): void;
   onSmoke(on: boolean): void;
   onSpotFlash(on: boolean): void;
+  onContours(on: boolean): void;
+}
+
+/**
+ * What the view controls start as — restored from the URL by `main.ts`, so a
+ * shared link reproduces the picture and not just the scenario.
+ */
+export interface HudInitialState {
+  /** Sim-seconds per real second; 0 = paused. */
+  timeScale: number;
+  view: ViewMode;
+  wind: WindOverlayMode;
+  smoke: boolean;
+  spotFlash: boolean;
+  contours: boolean;
 }
 
 export interface HudAgents {
@@ -117,16 +137,21 @@ export class Hud {
   private readonly perf: HTMLElement;
   private readonly history: number[] = [];
   private nextSample = 0;
-  private windMode: WindOverlayMode = 'off';
-  private smokeOn = true;
-  private spotFlashOn = true;
+  private windMode: WindOverlayMode;
+  private smokeOn: boolean;
+  private spotFlashOn: boolean;
+  private contoursOn: boolean;
 
   constructor(
     presets: ReadonlyArray<Scenario>,
     current: Scenario,
-    initialScale: number,
+    initial: HudInitialState,
     private readonly cb: HudCallbacks,
   ) {
+    this.windMode = initial.wind;
+    this.smokeOn = initial.smoke;
+    this.spotFlashOn = initial.spotFlash;
+    this.contoursOn = initial.contours;
     const style = document.createElement('style');
     style.textContent = STYLE;
     document.head.appendChild(style);
@@ -177,7 +202,7 @@ export class Hud {
       speedRow.appendChild(b);
     }
     ct.appendChild(speedRow);
-    this.setSpeed(initialScale, false);
+    this.setSpeed(initial.timeScale, false);
 
     const viewRow = document.createElement('div');
     viewRow.className = 'row';
@@ -189,6 +214,7 @@ export class Hud {
       o.textContent = v.label;
       view.appendChild(o);
     }
+    view.value = initial.view;
     view.addEventListener('change', () => {
       const mode = view.value as ViewMode;
       cb.onView(mode);
@@ -198,7 +224,8 @@ export class Hud {
     // One button, three states — so it has to relabel: "on" alone would leave
     // arrows and streamlines looking identical while showing different things.
     const wind = document.createElement('button');
-    wind.textContent = WIND_LABEL.arrows;
+    wind.textContent = WIND_LABEL[this.windMode === 'off' ? 'arrows' : this.windMode];
+    wind.classList.toggle('on', this.windMode !== 'off');
     wind.title =
       'Click to cycle the wind overlay: off → arrows → streamlines. Arrows sample a lattice; ' +
       'streamlines drift with the wind so a shift reads as motion (drawn at a legible speed, ' +
@@ -234,12 +261,24 @@ export class Hud {
       cb.onSpotFlash(this.spotFlashOn);
     });
     viewRow.appendChild(spots);
+    const contours = document.createElement('button');
+    contours.textContent = 'Contours';
+    contours.title =
+      `Index contour lines every ${CONTOUR_INTERVAL_M} m of elevation. Off is the clean landscape — ` +
+      'the relief is still there in the hillshade, and a scar or a data ramp reads without the lines over it.';
+    contours.classList.toggle('on', this.contoursOn);
+    contours.addEventListener('click', () => {
+      this.contoursOn = !this.contoursOn;
+      contours.classList.toggle('on', this.contoursOn);
+      cb.onContours(this.contoursOn);
+    });
+    viewRow.appendChild(contours);
     ct.appendChild(viewRow);
 
     this.legend = document.createElement('div');
     this.legend.className = 'legend';
     ct.appendChild(this.legend);
-    this.drawLegend('terrain');
+    this.drawLegend(initial.view);
 
     this.perf = document.createElement('div');
     this.perf.className = 'perf';

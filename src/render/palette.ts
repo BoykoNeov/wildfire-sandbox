@@ -40,6 +40,12 @@ export interface RenderOptions {
    * view (fire always reads the same, unlike smoke).
    */
   spotFlash?: boolean;
+  /**
+   * Draw the 50 m index contour lines. Default true. Off is the clean-landscape
+   * reading — worth having when the scar, a data ramp or a screenshot is the
+   * thing you are trying to see and the lines only add noise.
+   */
+  contours?: boolean;
 }
 
 export interface Rgb {
@@ -130,8 +136,20 @@ function isContour(world: WorldState, i: number, x: number, y: number): boolean 
 
 /** Static per-world shading + per-frame scratch (see the module header). */
 interface TerrainCache {
-  /** hillshade × texture jitter × contour, per cell. */
+  /** hillshade × texture jitter × contour, per cell — the lighting term with the lines in. */
   shade: Float32Array;
+  /**
+   * The same term with the contour factor left out, for `contours: false`.
+   *
+   * Two whole arrays rather than a mask and a per-cell branch, for two reasons:
+   * the frame loop picks one of them ONCE and then indexes it (no branch in the
+   * hot loop at all), and the with-contours array keeps the exact float rounding
+   * it has always had — `Float32Array` stores round, so darkening a stored
+   * `shade[i]` at use time is NOT the same number as darkening before the store,
+   * and every contour cell could shift a byte. This way "contours on" is bit-for
+   * -bit the frame this renderer drew before the toggle existed.
+   */
+  shadePlain: Float32Array;
   /** `hash01(i)` per cell. */
   noise: Float32Array;
   /**
@@ -146,6 +164,8 @@ interface TerrainCache {
    * then is far cheaper than 6 MB of buffers at 512² and six invalidation paths.
    */
   groundView: ViewMode;
+  /** Whether {@link ground} was filled with contours drawn — same cold-start rule. */
+  groundContours: boolean;
   /** 1 where a cell is water (nonburnable below {@link WATER_MAX_ELEV}) — it shimmers, so it is never cached. */
   water: Uint8Array;
   /** False until {@link ground} has been filled once (a fresh or repainted world). */
@@ -176,6 +196,7 @@ function cacheFor(world: WorldState): TerrainCache {
   if (c === undefined || c.shade.length !== n) {
     c = {
       shade: new Float32Array(n),
+      shadePlain: new Float32Array(n),
       noise: new Float32Array(n),
       smoke: new Float32Array(n),
       soot: new Float32Array(n),
@@ -184,6 +205,7 @@ function cacheFor(world: WorldState): TerrainCache {
       frameCounter: 0,
       ground: new Uint8ClampedArray(n * 4),
       groundView: 'terrain',
+      groundContours: true,
       water: new Uint8Array(n),
       groundValid: false,
       groundBand: 0,
@@ -201,9 +223,9 @@ function cacheFor(world: WorldState): TerrainCache {
       const h = hash01(i);
       c.noise[i] = h;
       // Small static per-cell brightness jitter breaks up the fuel-band posterization.
-      let s = hillshade(world, i, x, y) * (1 + (h - 0.5) * 0.1);
-      if (isContour(world, i, x, y)) s *= CONTOUR_SHADE;
-      c.shade[i] = s;
+      const s = hillshade(world, i, x, y) * (1 + (h - 0.5) * 0.1);
+      c.shadePlain[i] = s;
+      c.shade[i] = isContour(world, i, x, y) ? s * CONTOUR_SHADE : s;
       // Mirrors `terrainRGB`'s water sub-branch exactly (the two are separate
       // tests of the same condition): anything with neither a fuel bed nor the
       // cut-line colour, low enough to be a lake rather than bare rock. Water is
@@ -479,16 +501,25 @@ const GROUND_BANDS = 8;
  * starts from a memcpy of {@link TerrainCache.ground} and only repaints the
  * cells that actually animate (fire, water shimmer, retardant).
  */
-function refreshGround(world: WorldState, cache: TerrainCache, view: ViewMode): void {
+function refreshGround(
+  world: WorldState,
+  cache: TerrainCache,
+  view: ViewMode,
+  contours: boolean,
+): void {
   const { width, height, layers, clock } = world;
-  // A view switch leaves the buffer holding another view's colours: a cold
-  // start, exactly like a fresh or repainted world.
-  const full = !cache.groundValid || cache.groundView !== view;
+  // A view switch — or a contour toggle — leaves the buffer holding colours
+  // composed for something else: a cold start, exactly like a fresh or repainted
+  // world. Both are human clicks, so one full rewrite is the whole cost, and the
+  // hillshade underneath is never recomputed for either.
+  const full =
+    !cache.groundValid || cache.groundView !== view || cache.groundContours !== contours;
   cache.groundView = view;
+  cache.groundContours = contours;
   const y0 = full ? 0 : Math.floor((cache.groundBand * height) / GROUND_BANDS);
   const y1 = full ? height : Math.floor(((cache.groundBand + 1) * height) / GROUND_BANDS);
   const ground = cache.ground;
-  const shade = cache.shade;
+  const shade = contours ? cache.shade : cache.shadePlain;
   const noise = cache.noise;
   const fuel = layers.fuel.data;
   const moist = layers.moisture.data;
@@ -954,9 +985,13 @@ export function renderRGBA(
   const view = opts.view ?? 'terrain';
   const drawSmoke = (opts.smoke ?? true) && view === 'terrain';
   const drawFlash = opts.spotFlash ?? true;
+  const contours = opts.contours ?? true;
   const n = width * height;
   const cache = cacheFor(world);
-  const shade = cache.shade;
+  // The cells repainted live below must use the SAME lighting term the cache was
+  // filled with, or a water or retardant cell would keep a contour its
+  // neighbours had dropped.
+  const shade = contours ? cache.shade : cache.shadePlain;
   const noise = cache.noise;
   const fire = layers.fire.data;
   const fuel = layers.fuel.data;
@@ -975,7 +1010,7 @@ export function renderRGBA(
   // retardant; on a data view nothing shimmers, so it is fire and retardant
   // alone — and on `intensity`, which never tints for slurry, fire alone.
   // Nearly every cell is skipped outright.
-  refreshGround(world, cache, view);
+  refreshGround(world, cache, view, contours);
   rgba.set(cache.ground);
   if (view === 'terrain') {
     const water = cache.water;
