@@ -206,7 +206,7 @@ seconds) it holds the shipped presets within a few percent of where they were
 distances opens up with intensity. The crown boost moved from distance to
 firebrand height, which is where crowning physically acts. `timber-crown-run`'s
 golden is recomputed; the old loft formula is gone, not flag-restorable.
-Next: the last honest gap in `docs/science.md` §9 that is a *phase* — a smooth
+Next: the next gap in `docs/science.md` §9 that is a *phase* — a smooth
 wavefront (Huygens marker points; the raster route is spent, so this needs a plan
 doc of its own) — then the additive future phases (WUI structures → industrial).
 Each phase must be runnable and verifiable before the next.
