@@ -3,7 +3,7 @@ import type { IFireModel } from '../models/IFireModel';
 import type { IFuelModel } from '../models/IFuelModel';
 import type { RothermelFuel } from '../models/IFuelModel';
 import { byteToFraction } from '../core/moisture';
-import { ANDERSON_13, deadFuelBed, fuelBed } from './anderson13';
+import { ANDERSON_13, deadFuelBed, fuelBed, type BedMoisture } from './anderson13';
 import {
   canopyBulkDensity,
   canopyCoverFraction,
@@ -207,6 +207,22 @@ export interface RothermelFireModelOptions {
    * live-bearing shrub models carry. A single value for both live herb and woody.
    */
   liveMoisture?: number;
+  /**
+   * 10-hr dead-fuel moisture [fraction] for every cell. Omit and the 10-hr class
+   * takes the cell's own fine (1-hr) moisture byte, exactly as before.
+   *
+   * This is a **scenario-level constant, not a layer**, and deliberately so: the
+   * 10-hr timelag is longer than a whole sandbox run, so the coarse classes barely
+   * move while the fire burns — what matters is the antecedent condition the run
+   * starts in, which is what BehavePlus asks for too (`moistureScenarios.cpp`
+   * ships four dead triples: 3/4/5, 6/7/8, 9/10/11, 12/13/14 %). The honest cost
+   * is that coarse dead moisture is spatially **uniform** while the fine layer
+   * keeps its wet-valley / dry-ridge pattern; with map-uniform weather drivers the
+   * fine layer is the only spatial information the sim actually has.
+   */
+  dead10hMoisture?: number;
+  /** 100-hr dead-fuel moisture [fraction]. See {@link dead10hMoisture}. */
+  dead100hMoisture?: number;
   /** See {@link WindReference}. Default `'midflame'`. */
   windReference?: WindReference;
   /** Canopy structure for wind sheltering and crown fire. Default {@link DEFAULT_CANOPY_STAND}. */
@@ -359,6 +375,13 @@ export class RothermelFireModel implements IFireModel {
   private readonly wafCache = new Map<number, number>();
 
   private readonly liveMoisture: number;
+  /**
+   * Per-class moisture splits, or `undefined` when the scenario asked for none
+   * (then every class falls back to the positional moisture and beds are
+   * byte-identical to the pre-split model). Built once and reused for every bed —
+   * these are constants, so the bed cache key stays (fuel id, fine moisture byte).
+   */
+  private readonly bedMoisture: BedMoisture | undefined;
   private readonly windReference: WindReference;
   private readonly canopy: CanopyStand;
   private readonly crownEnabled: boolean;
@@ -453,6 +476,10 @@ export class RothermelFireModel implements IFireModel {
   ) {
     const o: RothermelFireModelOptions = typeof opts === 'number' ? { liveMoisture: opts } : opts;
     this.liveMoisture = o.liveMoisture ?? DEFAULT_LIVE_MOISTURE;
+    this.bedMoisture =
+      o.dead10hMoisture !== undefined || o.dead100hMoisture !== undefined
+        ? { dead10h: o.dead10hMoisture, dead100h: o.dead100hMoisture }
+        : undefined;
     this.windReference = o.windReference ?? 'midflame';
     this.canopy = o.canopy ?? DEFAULT_CANOPY_STAND;
     this.crownEnabled = o.crownFire ?? true;
@@ -622,7 +649,7 @@ export class RothermelFireModel implements IFireModel {
     const key = fuelId * 256 + moistureByte;
     let bed = this.bedCache.get(key);
     if (bed === undefined) {
-      bed = prepareFuelBed(fuelBed(rf, byteToFraction(moistureByte), this.liveMoisture));
+      bed = prepareFuelBed(fuelBed(rf, byteToFraction(moistureByte), this.liveMoisture, this.bedMoisture));
       this.bedCache.set(key, bed);
     }
     return bed;
@@ -634,7 +661,7 @@ export class RothermelFireModel implements IFireModel {
     if (canopyBulkDensity(canopyByte, this.canopy) < MIN_CROWN_CBD) return null;
     let bed = this.crownBedCache[moistureByte];
     if (bed === undefined) {
-      bed = prepareFuelBed(fuelBed(FM10, byteToFraction(moistureByte), this.liveMoisture));
+      bed = prepareFuelBed(fuelBed(FM10, byteToFraction(moistureByte), this.liveMoisture, this.bedMoisture));
       this.crownBedCache[moistureByte] = bed;
     }
     return bed;

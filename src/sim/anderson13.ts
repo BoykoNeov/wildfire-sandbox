@@ -95,25 +95,51 @@ export function hasLiveFuel(m: RothermelFuel): boolean {
 }
 
 /**
- * Assemble a single-category Rothermel {@link FuelBed} from a fuel model's DEAD
- * size classes at a uniform dead-fuel moisture. The 1-hr class keeps the model's
- * SAV; the 10-hr and 100-hr classes use the standard {@link DEAD_10H_SAV} /
- * {@link DEAD_100H_SAV}. Zero-load classes are omitted (they contribute nothing).
+ * Per-class moistures that differ from the two positional ones, all optional and
+ * all **fractions** (0.08 = 8%). Every field defaults to the positional moisture
+ * for its category, so omitting the argument entirely reproduces the older
+ * "one dead moisture, one live moisture" bed byte-for-byte.
  *
- * One moisture for all dead classes (the world has a single dead-moisture layer);
- * real BehavePlus tracks 1-/10-/100-hr moistures apart — a cheap future split (D6
- * item 1). This helper is dead-only by design (flame-residence σ, single-category
- * reference tests); {@link fuelBed} adds the live classes for the full model.
+ * These are *absolute* values, not offsets from the fine class. The coarse dead
+ * classes are scenario-level constants rather than a world layer: their 10-hr and
+ * 100-hr timelags are far longer than a sandbox run, so what matters is the
+ * antecedent condition the run *starts* in (BehavePlus asks for the three dead
+ * moistures the same way — `moistureScenarios.cpp`). An *offset* from the live
+ * fine layer would be actively wrong, because the fine layer moves within the run
+ * and the logs would follow the grass.
  */
-export function deadFuelBed(m: RothermelFuel, deadMoisture: number): FuelBed {
-  const classes: Array<[number, number]> = [
-    [m.dead1hLoad, m.dead1hSav],
-    [m.dead10hLoad, DEAD_10H_SAV],
-    [m.dead100hLoad, DEAD_100H_SAV],
+export interface BedMoisture {
+  /** 10-hr dead-fuel moisture. Default: the 1-hr value. */
+  dead10h?: number;
+  /** 100-hr dead-fuel moisture. Default: the 1-hr value. */
+  dead100h?: number;
+  /** Live herbaceous moisture. Default: the positional `liveMoisture`. */
+  liveHerb?: number;
+  /** Live woody moisture. Default: the positional `liveMoisture`. */
+  liveWoody?: number;
+}
+
+/**
+ * Assemble a single-category Rothermel {@link FuelBed} from a fuel model's DEAD
+ * size classes. The 1-hr class keeps the model's SAV; the 10-hr and 100-hr
+ * classes use the standard {@link DEAD_10H_SAV} / {@link DEAD_100H_SAV}.
+ * Zero-load classes are omitted (they contribute nothing).
+ *
+ * `dead1hMoisture` is the fine dead-fuel moisture — the per-cell world layer. The
+ * coarse classes take {@link BedMoisture.dead10h} / {@link BedMoisture.dead100h}
+ * when given and the fine value otherwise (plan §D6 item 1). This helper is
+ * dead-only by design (flame-residence σ, single-category reference tests);
+ * {@link fuelBed} adds the live classes for the full model.
+ */
+export function deadFuelBed(m: RothermelFuel, dead1hMoisture: number, moisture?: BedMoisture): FuelBed {
+  const classes: Array<[number, number, number]> = [
+    [m.dead1hLoad, m.dead1hSav, dead1hMoisture],
+    [m.dead10hLoad, DEAD_10H_SAV, moisture?.dead10h ?? dead1hMoisture],
+    [m.dead100hLoad, DEAD_100H_SAV, moisture?.dead100h ?? dead1hMoisture],
   ];
   const particles: FuelParticle[] = classes
     .filter(([load]) => load > 0)
-    .map(([load, sav]) => ({ load, sav, moisture: deadMoisture }));
+    .map(([load, sav, m_f]) => ({ load, sav, moisture: m_f }));
   return {
     particles,
     depth: m.depth,
@@ -125,26 +151,31 @@ export function deadFuelBed(m: RothermelFuel, deadMoisture: number): FuelBed {
 /**
  * Assemble a **two-category** Rothermel {@link FuelBed} from a fuel model: the
  * dead size classes (as {@link deadFuelBed}) plus the live herbaceous and live
- * woody classes, each tagged `category: 'live'`. The live classes carry a single
- * `liveMoisture` fraction (e.g. 1.0 = 100%); real BehavePlus tracks live herb and
- * live woody moistures apart, a cheap future split. This is the bed the
- * two-category `surfaceSpread` needs to honour live-fuel loads faithfully — the
- * eight dead-only models reduce to exactly {@link deadFuelBed}, while the five
- * live-bearing models (FM2/4/5/7/10) now include their live fuel.
+ * woody classes, each tagged `category: 'live'`. This is the bed the two-category
+ * `surfaceSpread` needs to honour live-fuel loads faithfully — the eight dead-only
+ * models reduce to exactly {@link deadFuelBed}, while the five live-bearing models
+ * (FM2/4/5/7/10) include their live fuel.
  *
- * The dead-fuel `deadMoisture` comes from the world moisture layer; the
- * `liveMoisture` is a scenario-level scalar (the moisture layer is dead-only —
- * live moisture runs 100–300% and gets its own representation; see the Phase-2
- * plan D6 and `src/core/moisture.ts`).
+ * `dead1hMoisture` comes from the world moisture layer, per cell. `liveMoisture`
+ * is the scenario-level fallback for both live classes (the moisture layer is
+ * dead-only — live moisture runs 100–300% and gets its own representation; see the
+ * Phase-2 plan D6 and `src/core/moisture.ts`). The optional {@link BedMoisture}
+ * splits the coarse dead classes and the two live classes apart; omit it and every
+ * class falls back to its positional value, exactly as before.
  */
-export function fuelBed(m: RothermelFuel, deadMoisture: number, liveMoisture: number): FuelBed {
-  const bed = deadFuelBed(m, deadMoisture);
-  const live: Array<[number, number]> = [
-    [m.liveHerbLoad, m.liveHerbSav],
-    [m.liveWoodyLoad, m.liveWoodySav],
+export function fuelBed(
+  m: RothermelFuel,
+  dead1hMoisture: number,
+  liveMoisture: number,
+  moisture?: BedMoisture,
+): FuelBed {
+  const bed = deadFuelBed(m, dead1hMoisture, moisture);
+  const live: Array<[number, number, number]> = [
+    [m.liveHerbLoad, m.liveHerbSav, moisture?.liveHerb ?? liveMoisture],
+    [m.liveWoodyLoad, m.liveWoodySav, moisture?.liveWoody ?? liveMoisture],
   ];
-  for (const [load, sav] of live) {
-    if (load > 0) bed.particles.push({ load, sav, moisture: liveMoisture, category: 'live' });
+  for (const [load, sav, m_f] of live) {
+    if (load > 0) bed.particles.push({ load, sav, moisture: m_f, category: 'live' });
   }
   return bed;
 }

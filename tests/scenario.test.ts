@@ -181,6 +181,13 @@ describe('presets', () => {
     // its own arrival accumulator, which changes the front's shape and its
     // arrival order. Previous value: 382468332 — still reachable, byte-for-byte,
     // as `spreadTemplate: 'ring8'`.
+    //
+    // Recomputed again in Phase 9: this preset now states its 10-hr / 100-hr dead
+    // moisture (7% / 10%) instead of letting the coarse classes silently inherit
+    // the fine moisture byte, so its heavy fuel is honestly wetter than its
+    // needles and the stand is slightly less keen to torch (FM10 fireline
+    // intensity −3.6% at 3% fine moisture). Previous value: 2410933397 — reachable
+    // by dropping the two `dead*hMoisture` fields from the preset.
     const l = loadScenario(shrink(findPreset('timber-crown-run')!));
     l.sim.run(1200, 1);
     const { fire, intensity, crown } = l.world.layers;
@@ -197,7 +204,7 @@ describe('presets', () => {
       mix(kw >>> 16);
     }
     for (let i = 0; i < crown.data.length; i++) mix(crown.data[i]);
-    expect(h >>> 0).toBe(2410933397);
+    expect(h >>> 0).toBe(4181824974);
   });
 
   it('the rain front pushes dead-fuel moisture up after the rain arrives', { timeout: 30000 }, () => {

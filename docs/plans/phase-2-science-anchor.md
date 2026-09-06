@@ -163,13 +163,21 @@ layer for live moisture.
 is. The architecture is staged so these are additive, but they are *not* equally
 cheap; label honestly:
 
-1. **Single dead moisture → per-class dead moisture (1-/10-/100-hr apart)** —
-   *genuinely model-side / data-distribution only.* `rothermel.ts` already lets
-   each `FuelParticle` carry its own `moisture`; `deadFuelBed()` currently sets
-   them equal (`anderson13.ts:103`). Upgrade = change how `deadFuelBed()`
-   distributes moisture (a coarse-fuel offset from the painted fine moisture, or
-   independent per-class layers). No change to the pure Rothermel math, no
-   encoding change. Cheap, deferrable, no scheduled home needed.
+1. ✅ **Single dead moisture → per-class dead moisture (1-/10-/100-hr apart)** —
+   *DONE* (Phase 9; `docs/plans/phase-9-fuel-moisture.md`, `docs/science.md` §3a).
+   As predicted this was model-side only: `rothermel.ts` already lets each
+   `FuelParticle` carry its own `moisture`, so `deadFuelBed()`/`fuelBed()` gained an
+   optional `BedMoisture` and nothing in the pure Rothermel math or the encoding
+   moved. **This entry's own suggestion of "a coarse-fuel offset from the painted
+   fine moisture" was rejected, and the reason is worth recording:** the fine layer
+   became *dynamic* in Phase 3, so a constant offset makes the 100-hr logs chase the
+   1-hr grass — a rain pulse driving the fine class to 60% would drag the coarse
+   classes up with it, the exact opposite of the effect. The coarse classes are
+   instead absolute scenario-level constants (as BehavePlus asks for them), which
+   also keeps the fire model's bed cache keyed on one moisture axis. Measured: a
+   small lever on R₀ (≤ 1.6% under BehavePlus's own 6/7/8 triple; ≤ 11% at an
+   extreme 6/15/25) and about twice that on fireline intensity, zero on the
+   single-dead-class models FM1/FM3.
 2. ✅ **Dead-only bed → dead/live two-category split** — *DONE* (out-of-band,
    after step 5). `rothermel.ts` `surfaceSpread` is now the two-category 1972 form:
    per-category surface-area weighting, live moisture of extinction

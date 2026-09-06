@@ -3,6 +3,7 @@ import {
   ANDERSON_13,
   Anderson13FuelModel,
   deadFuelBed,
+  fuelBed,
   hasLiveFuel,
   DEAD_10H_SAV,
   DEAD_100H_SAV,
@@ -17,7 +18,14 @@ import {
   meanBulkDensity,
   meanPackingRatio,
   optimalPackingRatio,
+  liveMoistureOfExtinction,
+  type SpreadEnv,
 } from '../src/sim/rothermel';
+
+/** No wind, no slope — isolates R0 and the bed itself. */
+const CALM: SpreadEnv = { midflameWind: 0, tanSlope: 0 };
+/** A brisk midflame wind, for the intensity comparisons. */
+const WINDY: SpreadEnv = { midflameWind: 300, tanSlope: 0 };
 
 /**
  * The catalogue parameters are transcribed from the USFS Fire Lab BehavePlus
@@ -157,5 +165,100 @@ describe('cross-model physical sanity', () => {
       const r = surfaceSpread(bed, { midflameWind: 400, tanSlope: 0 });
       expect(r.rateOfSpread, `FM${n} should carry fire`).toBeGreaterThan(0);
     }
+  });
+});
+
+/**
+ * Per-size-class dead-fuel moisture (Phase-2 plan §D6 item 1, landed in Phase 9).
+ * The 10-hr and 100-hr classes can carry their own moisture instead of inheriting
+ * the cell's fine (1-hr) value. Numbers below are **measured**, not assumed — see
+ * `docs/science.md` §5a.
+ */
+describe('per-class dead moisture', () => {
+  const uniform = (fm: number, m: number) =>
+    surfaceSpread(deadFuelBed(ANDERSON_13.get(fm)!, m), CALM);
+  const split = (fm: number, m1: number, m10: number, m100: number) =>
+    surfaceSpread(
+      deadFuelBed(ANDERSON_13.get(fm)!, m1, { dead10h: m10, dead100h: m100 }),
+      CALM,
+    );
+
+  it('is a no-op when no coarse moisture is given — every pinned test depends on this', () => {
+    for (let n = 1; n <= 13; n++) {
+      const m = ANDERSON_13.get(n)!;
+      expect(deadFuelBed(m, 0.07, {}), `FM${n}`).toEqual(deadFuelBed(m, 0.07));
+      expect(deadFuelBed(m, 0.07, { dead10h: undefined }), `FM${n}`).toEqual(deadFuelBed(m, 0.07));
+    }
+  });
+
+  it('puts each moisture on its own size class (FM10)', () => {
+    const fm10 = ANDERSON_13.get(10)!;
+    const bed = deadFuelBed(fm10, 0.06, { dead10h: 0.15, dead100h: 0.25 });
+    expect(bed.particles).toEqual([
+      { load: fm10.dead1hLoad, sav: fm10.dead1hSav, moisture: 0.06 },
+      { load: fm10.dead10hLoad, sav: DEAD_10H_SAV, moisture: 0.15 },
+      { load: fm10.dead100hLoad, sav: DEAD_100H_SAV, moisture: 0.25 },
+    ]);
+  });
+
+  it('falls back per class, so a 100-hr value alone leaves the 10-hr class on the fine value', () => {
+    const fm10 = ANDERSON_13.get(10)!;
+    const bed = deadFuelBed(fm10, 0.06, { dead100h: 0.25 });
+    expect(bed.particles.map((p) => p.moisture)).toEqual([0.06, 0.06, 0.25]);
+  });
+
+  it('cannot change a single-dead-class model — FM1 and FM3 have no coarse fuel', () => {
+    for (const fm of [1, 3]) {
+      expect(split(fm, 0.06, 0.15, 0.25).rateOfSpread, `FM${fm}`).toBe(
+        uniform(fm, 0.06).rateOfSpread,
+      );
+    }
+  });
+
+  it('slows the fire monotonically as the coarse classes wet up (FM13)', () => {
+    const dry = split(13, 0.06, 0.06, 0.06).rateOfSpreadNoWindSlope;
+    const mid = split(13, 0.06, 0.1, 0.15).rateOfSpreadNoWindSlope;
+    const wet = split(13, 0.06, 0.15, 0.25).rateOfSpreadNoWindSlope;
+    expect(mid).toBeLessThan(dry);
+    expect(wet).toBeLessThan(mid);
+  });
+
+  it('is a small effect on R0, concentrated in the heavy multi-class beds (measured)', () => {
+    // Ratio of R0 at 1-hr 6% / 10-hr 15% / 100-hr 25% to a uniform 6%.
+    const ratio = (fm: number) =>
+      split(fm, 0.06, 0.15, 0.25).rateOfSpreadNoWindSlope /
+      uniform(fm, 0.06).rateOfSpreadNoWindSlope;
+    expect(ratio(13)).toBeCloseTo(0.8905, 3); // heavy slash: the most it moves
+    expect(ratio(12)).toBeCloseTo(0.9128, 3);
+    expect(ratio(6)).toBeCloseTo(0.9417, 3);
+    expect(ratio(10)).toBeCloseTo(0.964, 3); // the timber bed that drives crown fire
+    expect(ratio(9)).toBeCloseTo(0.9962, 3); // long-needle litter: nearly nothing
+  });
+
+  it('moves fireline intensity about twice as far as spread rate (FM13, measured)', () => {
+    // Intensity is what crown fire and ember production threshold on, so the
+    // bigger lever there is the point of the feature.
+    const a = surfaceSpread(deadFuelBed(ANDERSON_13.get(13)!, 0.06), WINDY);
+    const b = surfaceSpread(
+      deadFuelBed(ANDERSON_13.get(13)!, 0.06, { dead10h: 0.15, dead100h: 0.25 }),
+      WINDY,
+    );
+    expect(b.rateOfSpread / a.rateOfSpread).toBeCloseTo(0.8905, 3);
+    expect(b.firelineIntensity / a.firelineIntensity).toBeCloseTo(0.8108, 3);
+  });
+
+  it('feeds the live moisture of extinction, which weights dead moisture by fineness', () => {
+    // Albini's M_x,live reads a fineness-weighted *dead* moisture, so splitting the
+    // classes changes it. It needs the two-category bed — on a dead-only bed there
+    // is no live fuel and the function short-circuits to the dead M_x.
+    const fm10 = ANDERSON_13.get(10)!;
+    const flat = liveMoistureOfExtinction(fuelBed(fm10, 0.06, 1.0));
+    const wetCoarse = liveMoistureOfExtinction(
+      fuelBed(fm10, 0.06, 1.0, { dead10h: 0.15, dead100h: 0.25 }),
+    );
+    // Wetter coarse dead fuel raises the fineness-weighted dead moisture, so the
+    // dead component preheats the live fuel less well: M_x,live falls.
+    expect(flat).toBeGreaterThan(fm10.deadMx);
+    expect(wetCoarse).toBeLessThan(flat);
   });
 });

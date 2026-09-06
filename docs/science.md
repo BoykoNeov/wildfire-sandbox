@@ -76,6 +76,46 @@ exist, and how a cell decides it has been reached.
 | Encoding | `layers.moisture` is a Uint8 with a *linear* 0..255 ↔ 0..1 meaning (`src/core/moisture.ts`, plan §D6). Dead fuel only. Live moisture is a scenario scalar on the fire model. |
 | Pinned by | `tests/emc.test.ts`, `tests/fuelMoisture.test.ts`, `tests/moisture.test.ts` |
 
+## 3a. Per-size-class dead moisture — the 10-hr and 100-hr classes
+
+| | |
+|---|---|
+| Modules | `src/sim/anderson13.ts` (`deadFuelBed` / `fuelBed` take a `BedMoisture`), options `dead10hMoisture` / `dead100hMoisture` on `RothermelFireModel` |
+| Form | The 1-hr class takes the cell's own moisture byte (§3). The 10-hr and 100-hr classes take **scenario-level constants** when given, and fall back to the 1-hr value when not. Rothermel already carries a moisture per fuel particle, so nothing in the spread math changed: the heat sink Q_ig, the surface-area-weighted dead category moisture in η_M, and Albini's fineness-weighted dead moisture inside M_x,live all pick the split up automatically. |
+| Data | BehavePlus ships four standard dead triples (`moistureScenarios.cpp`): very low 3/4/5 %, low 6/7/8 %, moderate 9/10/11 %, high 12/13/14 %. Note how *narrow* those are — one to two percentage points between classes. |
+| Pinned by | `tests/anderson13.test.ts` ("per-class dead moisture") |
+
+**Why the coarse classes are constants and not a layer.** Their timelags (10 h,
+100 h) are longer than a whole sandbox run, so within a burn they barely move —
+what matters is the antecedent condition the run *starts* in, which is exactly
+what BehavePlus asks its user for. An *offset* from the fine layer would be
+actively wrong: the fine layer is dynamic on a 1-hour timelag, so a rain pulse
+that drives the grass to 60 % would drag the logs up with it, which is the
+opposite of the effect worth modelling.
+
+**How big is the effect — measured, not assumed.** R₀ ratio against a uniform 6 %
+dead bed, at 1-hr 6 % / 10-hr 15 % / 100-hr 25 % (a wet-heavy-fuel antecedent far
+outside the standard triples, chosen to bound the effect):
+
+| bed | R₀ ratio | fireline-intensity ratio |
+|---|---|---|
+| FM1 short grass, FM3 tall grass | 1.000 (one dead class — cannot change) | 1.000 |
+| FM9 long-needle litter | 0.996 | 0.993 |
+| FM2 timber grass | 0.994 | 0.989 |
+| FM10 timber litter (the crown-fire bed) | 0.964 | 0.933 |
+| FM6 dormant brush | 0.942 | 0.896 |
+| FM12 medium slash | 0.913 | 0.853 |
+| FM13 heavy slash | 0.891 | 0.811 |
+
+Two honest readings of that table. First, this is a **small** lever on spread
+rate — under BehavePlus's own 6/7/8 triple the largest model moves 1.6 %, because
+the heat sink weights each particle by exp(−138/σ): ≈ 0.93 for fine fuel, 0.28 at
+the 10-hr SAV of 109, 0.010 at the 100-hr SAV of 30, and η_M weights the category
+moisture by surface area, which punishes coarse fuel again. Second, it is roughly
+**twice** the lever on fireline intensity, and intensity is what crown fire (§5)
+and ember production (§6) threshold on — so the place it changes a *run* is
+whether a stand torches, not how fast the flank creeps.
+
 ## 4. Wind — reference height and the wind adjustment factor
 
 | | |
@@ -164,9 +204,16 @@ upslope only.
   also clamps φ_s. Not applied here: it is a Rothermel-domain constraint on the
   head rate, orthogonal to fire shape, and turning it on would move head rates as
   well. Deferred rather than forgotten.
-- **Per-size-class dead moisture.** One dead moisture (the 1-hr class) feeds all
-  dead size classes. A 10-hr / 100-hr lag is a model-side tweak to
-  `deadFuelBed` (plan §D6 item 1), still deferred.
+- **Spatially varying coarse dead moisture.** The 10-hr and 100-hr classes are
+  now modelled (§3a) but as **map-wide constants**: only the fine class has a
+  per-cell layer, so a wet valley and a dry ridge have equally dry logs. With
+  map-uniform weather drivers the fine layer is the only spatial information the
+  sim has, so this buys little; per-class layers would be the upgrade, at three
+  moisture axes on the fire model's bed cache instead of one.
+- **Coarse dead moisture *dynamics*.** The 10-hr and 100-hr values are held fixed
+  for the run. That is defensible at sandbox run lengths (minutes to hours vs.
+  timelags of 10 and 100 hours) and it is why they are scenario inputs rather than
+  a system output — but a multi-day run would need them integrated.
 - **Live fuel moisture dynamics.** A scenario scalar, not a seasonal curve.
 - **Intensity-driven ember *loft distance*.** Launch rate now reads the recorded
   fireline intensity (§6), but how far a brand carries is still wind × canopy ×

@@ -92,6 +92,14 @@ const timberCrownRun: Scenario = {
   fireModel: {
     windReference: 'open',
     liveMoisture: 0.8,
+    // Heavy dead fuel lags the fine stuff: needles and grass follow the afternoon
+    // down to 3-4% here, but branches and logs are still on the last week's
+    // weather. Without these the coarse classes would silently inherit the fine
+    // moisture byte and the stand would be a touch keener to torch than it should
+    // (FM10 fireline intensity is ~3.6% higher at 3% fine moisture). See
+    // `docs/science.md` §3a.
+    dead10hMoisture: 0.07,
+    dead100hMoisture: 0.1,
     canopy: { standHeightM: 22, crownRatio: 0.6, baseHeightM: 2, maxBulkDensityKgM3: 0.16, foliarMoisturePct: 90 },
   },
   weather: {
