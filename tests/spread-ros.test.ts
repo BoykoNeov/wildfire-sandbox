@@ -4,7 +4,7 @@ import { Simulation } from '../src/core/simulation';
 import { Anderson13FuelModel, ANDERSON_13, deadFuelBed } from '../src/sim/anderson13';
 import { RothermelFireModel } from '../src/sim/rothermelFireModel';
 import { UniformWeatherProvider } from '../src/sim/uniformWeather';
-import { surfaceSpread, ftPerMinToMetersPerSec } from '../src/sim/rothermel';
+import { surfaceSpread, ftPerMinToMetersPerSec, metersPerSecToFtPerMin } from '../src/sim/rothermel';
 import { byteToFraction } from '../src/core/moisture';
 
 /**
@@ -28,6 +28,16 @@ function analyticR0Mps(): number {
   const model = ANDERSON_13.get(FM)!;
   const bed = deadFuelBed(model, byteToFraction(MOIST_BYTE));
   const { rateOfSpread } = surfaceSpread(bed, { midflameWind: 0, tanSlope: 0 });
+  return ftPerMinToMetersPerSec(rateOfSpread);
+}
+
+/** Analytic head-fire rate [m/s] at a given midflame wind [m/s], flat ground. */
+function analyticHeadMps(windMps: number): number {
+  const bed = deadFuelBed(ANDERSON_13.get(FM)!, byteToFraction(MOIST_BYTE));
+  const { rateOfSpread } = surfaceSpread(bed, {
+    midflameWind: metersPerSecToFtPerMin(windMps),
+    tanSlope: 0,
+  });
   return ftPerMinToMetersPerSec(rateOfSpread);
 }
 
@@ -81,10 +91,19 @@ describe('Rothermel fire model — front speed equals analytic ROS', () => {
     expect(ratio).toBeLessThanOrEqual(1.02);
   });
 
-  it('wind biases the front downwind (φw direction projection)', () => {
+  it('wind biases the front downwind (the head of the spread ellipse)', () => {
     // Same dry homogeneous field, but wind blows toward +x. The downwind front
-    // should outrun the crosswind front, which advances at the no-wind baseline.
-    const cellSize = 40 * analyticR0Mps(); // crosswind ≈ 1 cell / 40 ticks
+    // must outrun the crosswind front.
+    //
+    // Phase 8 note: the crosswind front is no longer the no-wind baseline R₀. It
+    // is the spread ellipse's rate at 90° off the head, R_head·(1−E), which for
+    // this wind is several times R₀ — the ellipse makes a wind-driven fire wider
+    // as well as longer (`docs/science.md` §1a). The cell size is therefore
+    // scaled off the analytic *head* rate so neither extent runs into the wall;
+    // sizing it off R₀ (as this test used to) lets both saturate the grid and the
+    // comparison becomes vacuous.
+    const WIND = 3; // m/s midflame toward +x
+    const cellSize = 4 * analyticHeadMps(WIND); // head ≈ 1 cell / 4 ticks
     const w = 81;
     const h = 81;
     const cx = w >> 1;
@@ -95,9 +114,9 @@ describe('Rothermel fire model — front speed equals analytic ROS', () => {
     world.layers.fire.set(cx, cy, FireState.Burning);
 
     new Simulation(world, [
-      new UniformWeatherProvider(3, 0), // ≈ 3 m/s midflame toward +x
+      new UniformWeatherProvider(WIND, 0),
       new RothermelFireModel(new Anderson13FuelModel()),
-    ]).run(400, 1);
+    ]).run(120, 1); // head ≈ 30 cells — well short of the wall
 
     const ignited = (x: number, y: number): boolean =>
       world.layers.fire.get(x, y) !== FireState.Unburned;
@@ -107,8 +126,10 @@ describe('Rothermel fire model — front speed equals analytic ROS', () => {
     let crosswind = 0;
     for (let y = cy + 1; y < h && ignited(cx, y); y++) crosswind = y - cy;
 
-    expect(crosswind).toBeGreaterThan(0); // crosswind still carries at baseline R0
-    expect(downwind).toBeGreaterThan(crosswind); // …but wind drives it much further
+    expect(crosswind).toBeGreaterThan(0); // the flanks still carry
+    expect(downwind).toBeLessThan(cx); // neither extent hit the wall
+    expect(crosswind).toBeLessThan(cy);
+    expect(downwind).toBeGreaterThan(crosswind * 2); // …and the head runs far ahead
   });
 
   it('a front runs faster uphill than on flat ground (φs slope factor)', () => {

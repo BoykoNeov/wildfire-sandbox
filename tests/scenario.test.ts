@@ -144,7 +144,13 @@ describe('presets', () => {
     it(`"${p.id}" loads and its fire grows`, () => {
       const l = loadScenario(shrink(p));
       expect(l.burnableCells).toBeGreaterThan(1000);
-      l.sim.run(900, 1);
+      // 1800 s, not 900: since Phase 8 a *point* ignition develops more slowly,
+      // because only the head ray runs at the head rate and the rest of the
+      // ellipse is a fraction of it. "shifting-winds" — one 30 m cell of
+      // canopy-sheltered fuel — sits right at the edge of this gate at 900 s
+      // (it reaches ~330 burned cells by t = 3000). Giving every preset twice
+      // the clock keeps the assertion itself untouched.
+      l.sim.run(1800, 1);
       let touched = 0;
       for (const v of l.world.layers.fire.data) if (v !== FireState.Unburned) touched++;
       expect(touched).toBeGreaterThan(3);
@@ -165,6 +171,10 @@ describe('presets', () => {
     // byte-identical — a cache, a compaction, a reordered sweep — has to keep
     // this number. If a change deliberately alters the physics, recompute it and
     // say so in the commit.
+    //
+    // Recomputed in Phase 8: the elliptical spread law (`spreadShape:
+    // 'elliptical'`, now the default) changes every direction but the head, so
+    // this run is deliberately a different run. Previous value: 1457051880.
     const l = loadScenario(shrink(findPreset('timber-crown-run')!));
     l.sim.run(1200, 1);
     const { fire, intensity, crown } = l.world.layers;
@@ -181,7 +191,7 @@ describe('presets', () => {
       mix(kw >>> 16);
     }
     for (let i = 0; i < crown.data.length; i++) mix(crown.data[i]);
-    expect(h >>> 0).toBe(1457051880);
+    expect(h >>> 0).toBe(382468332);
   });
 
   it('the rain front pushes dead-fuel moisture up after the rain arrives', { timeout: 30000 }, () => {

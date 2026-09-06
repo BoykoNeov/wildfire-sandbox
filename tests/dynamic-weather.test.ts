@@ -4,15 +4,17 @@ import { Simulation } from '../src/core/simulation';
 import { Anderson13FuelModel, ANDERSON_13, deadFuelBed } from '../src/sim/anderson13';
 import { RothermelFireModel } from '../src/sim/rothermelFireModel';
 import { DynamicWeatherProvider } from '../src/sim/dynamicWeather';
-import { surfaceSpread, ftPerMinToMetersPerSec } from '../src/sim/rothermel';
+import { surfaceSpread, ftPerMinToMetersPerSec, metersPerSecToFtPerMin } from '../src/sim/rothermel';
 import { byteToFraction } from '../src/core/moisture';
 
 const FM = 1; // FM1 short grass.
 const MOIST_BYTE = 15;
 
-function analyticR0Mps(): number {
+/** Analytic head-fire rate [m/s] at a midflame wind, flat ground. */
+function analyticHeadMps(windMps: number): number {
   const bed = deadFuelBed(ANDERSON_13.get(FM)!, byteToFraction(MOIST_BYTE));
-  return ftPerMinToMetersPerSec(surfaceSpread(bed, { midflameWind: 0, tanSlope: 0 }).rateOfSpread);
+  const env = { midflameWind: metersPerSecToFtPerMin(windMps), tanSlope: 0 };
+  return ftPerMinToMetersPerSec(surfaceSpread(bed, env).rateOfSpread);
 }
 
 /** Homogeneous flat FM1 field ignited at the centre. */
@@ -38,8 +40,11 @@ function extents(world: WorldState): { east: number; west: number } {
 
 describe('DynamicWeatherProvider — time-varying wind flips the dangerous flank', () => {
   it('east flank leads under early east wind; west flank overtakes after the shift', () => {
-    const R0 = analyticR0Mps();
-    const cellSize = 20 * R0; // ~20 ticks per no-wind cell crossing
+    // Scale the cell off the *head* rate at the peak wind, not off R₀. Since
+    // Phase 8 the flanks and the backing edge run at a share of the head rate
+    // rather than at R₀, so an R₀-sized cell lets both flanks reach the wall
+    // within the first phase and the comparison becomes vacuous (both read 40).
+    const cellSize = 20 * analyticHeadMps(4); // ~20 ticks per head-fire cell crossing
     const w = 81;
     const h = 81;
     const T = 1200; // wind ramps east → west over [0, T]
@@ -60,6 +65,9 @@ describe('DynamicWeatherProvider — time-varying wind flips the dangerous flank
     sim.run(T / 2, 1);
     const b = extents(world);
 
+    // Nothing may reach the wall, or the ordering below is meaningless.
+    expect(b.east).toBeLessThan(w >> 1);
+    expect(b.west).toBeLessThan(w >> 1);
     // While the wind blew east, the east flank ran ahead of the west flank.
     expect(a.east).toBeGreaterThan(a.west);
     // After the reversal, the west flank became the fast one: it gained more ground

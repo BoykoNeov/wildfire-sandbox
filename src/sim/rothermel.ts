@@ -342,7 +342,7 @@ export interface BedIntermediates {
 }
 
 /** Wind factor from prepared intermediates: C·U^B·(β/β_op)^-E. */
-function windFactorFrom(bi: BedIntermediates, midflameWind: number): number {
+export function windFactorFrom(bi: BedIntermediates, midflameWind: number): number {
   if (midflameWind <= 0) return 0;
   return bi.windC * Math.pow(midflameWind, bi.windB) * Math.pow(bi.betaRatio, -bi.windE);
 }
