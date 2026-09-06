@@ -6,7 +6,7 @@ import { flameLength, kwPerMToBtuPerFtSec } from './rothermel';
 import { maxSpotDistanceM } from './spotDistance';
 import { DEFAULT_CANOPY_STAND, type CanopyStand } from './canopyStand';
 import { unshelteredWaf } from './windAdjustment';
-import { DEFAULT_WIND_REFERENCE, type WindReference } from './rothermelFireModel';
+import { DEFAULT_WIND_REFERENCE, type WindReference } from './surfaceBehaviour';
 
 /**
  * Phase-3 spotting (Handoff §2.1 "plume rise / spotting = modeled
