@@ -797,12 +797,22 @@ scope decision, left to the user (§5d). Flipping remains a one-line change plus
   and the saving most likely to bring the 512² terrain view inside 60 fps.
 - **Ownership is claimed too early.** `advance`'s paint sets `owner` on a cell
   *before* checking that it will ignite, so a front claims wet and nonburnable
-  cells it merely touches. The suspected consequence is untested: a wet patch a
-  front wraps and then drops as an inner loop (§D7) stays owned by that front, so
-  once it dries no other front can enter it and an ember landing there seeds no
-  new front. It predates the retirement fix and does not change any output
-  measured here. Reproduce it with a test first; if it reproduces, claim a cell
-  only when it ignites or is already alight.
+  cells it merely touches. **Confirmed by test** (commit `9001f54`,
+  `tests/huygens.test.ts` "a wet cell the front touched but did not light"): the
+  §D7 island geometry with the island *wet* instead of rock. The front claims 3–4
+  island cells without lighting them — all at the corners, where an edge cuts
+  across. Once the island dries, an ember landing **on a claimed cell** lights that
+  one cell and seeds no front: 79 of the 80 island cells stay unburned, where the
+  raster burns all 80. An ember at the island's **centre** is barely affected (1
+  cell left unburned windless, 0 at 3 m/s): the weld blocks another front's
+  *markers*, but its *edges* still paint the claimed cells. So the mechanism is
+  real, and the bad case needs an ember (or player ignition, or backburn) to land
+  on one of a few specific cells; how often that happens on the shipped presets is
+  **not measured**. It is the first *correctness* reason against the default flip,
+  not just a soft one. Pinned as `it.fails`; not fixed. A fix — the obvious one is
+  to claim a cell only when it ignites or is already alight — flips both new tests
+  and should be held to the retirement fix's gate (byte-identical preset hours, or
+  an explained diff).
 - The default flip (above) is the user's call.
 
 (Burned area differs between engines — e.g. 34 329 vs the raster's ~14 k at one

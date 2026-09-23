@@ -906,7 +906,12 @@ describe('Huygens marker front — a wet cell the front touched but did not ligh
   // lighting it — here, the island's corners. Two things read that claim later:
   // seeding (`owner[i] < 0` only), so an ember landing there once it dries lights
   // one cell and grows no front; and the weld (`owner[j] !== f.id`), so any *other*
-  // front treats the cell as a wall. Found in review, confirmed here; not fixed yet.
+  // front treats the cell as a wall (partially — another front's *edges* still
+  // paint it, so an ember at the island's centre leaves only 0–1 cells unburned).
+  // Found in review, confirmed here; not fixed yet. A fix that stops wet cells
+  // being claimed flips BOTH tests below — the setup's `claimedUnlit > 0` goes red
+  // with it — so rewrite the setup then; and hold the fix to the retirement fix's
+  // gate: byte-identical output on every preset's hour, or explain the diff.
 
   it('setup: the front claims wet island cells without lighting them; the raster burns the dried island from an ember', () => {
     const h = wetIslandEmber('huygens');
@@ -918,7 +923,7 @@ describe('Huygens marker front — a wet cell the front touched but did not ligh
   it.fails('an ember on a claimed-but-unlit cell burns the dried island, as on the raster', () => {
     // Measured before any fix: 79 of the island's 80 cells stay unburned — the
     // ember cell lights, no front is seeded from it, and the island never burns.
-    // Remove `.fails` once the claim is moved behind the `carriesFire` gate.
+    // Remove `.fails` when this is fixed (and see the note above on the setup test).
     expect(wetIslandEmber('huygens').stillUnburned).toBe(0);
   }, 30_000);
 });
