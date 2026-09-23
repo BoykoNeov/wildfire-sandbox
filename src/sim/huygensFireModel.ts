@@ -55,12 +55,12 @@ import { SurfaceBehaviour, type SurfaceBehaviourOptions } from './surfaceBehavio
  * band → write `fire`, and `intensity` / `crown` / `burnElapsed` on the cells
  * that flipped, in the same places the raster model writes them.
  *
- * ### Scope (Stages 1–2)
+ * ### Scope (Stages 1–3)
  *
  * Advance, substepping, density control, barriers, seeding, rasterisation
- * (Stage 1), and **merging plus ring retirement** (Stage 2, §D6). **Not yet:**
- * crossover and loop removal for a *single* self-intersecting front (§D7,
- * Stage 3), and burnable enclaves, which are out of scope for the phase entirely
+ * (Stage 1), **merging plus ring retirement** (Stage 2, §D6), and crossover
+ * removal for a self-intersecting front (Stage 3, §D7, {@link decrossFronts}).
+ * **Not done:** burnable enclaves, which are out of scope for the phase entirely
  * (§D8).
  *
  * **Merging here is grid-assisted, not a polygon-union transcription** — a
@@ -365,21 +365,17 @@ export class HuygensFireModel implements IFireModel {
    * is replaced by exactly one, so order is preserved.
    */
   private decrossFronts(): void {
-    // Iterate to a fixed point: keeping the largest loop can, on a heavily folded
-    // front, leave that loop with a crossing of its own that a second pass clears.
-    // The post-condition is "no front self-intersects", so loop until that holds
-    // (bounded — each pass strictly reduces a front's crossings, and MAX_DECROSS is
-    // a safety stop, not an expected limit). The loop body is skipped entirely on
-    // the common tick where nothing crosses, so this costs one `selfIntersects`
-    // sweep when the front is already clean.
-    for (let pass = 0; pass < MAX_DECROSS_PASSES; pass++) {
-      if (!this.fronts.some((f) => selfIntersects(f))) return;
-      const next: Front[] = [];
-      for (const f of this.fronts) {
-        if (!selfIntersects(f)) {
-          next.push(f);
-          continue;
-        }
+    // Each front is iterated to its own fixed point: keeping the largest loop can,
+    // on a heavily folded front, leave that loop with a crossing of its own that a
+    // second pass clears. Fronts do not interact here, so this is the same result
+    // as sweeping every front once per pass — but a clean front is tested exactly
+    // once per tick, and a front that was never touched is never re-tested.
+    // MAX_DECROSS_PASSES is a safety stop, not an expected limit.
+    const fronts = this.fronts;
+    let keep = 0;
+    for (let idx = 0; idx < fronts.length; idx++) {
+      let f: Front | null = fronts[idx];
+      for (let pass = 0; pass < MAX_DECROSS_PASSES && f !== null && selfIntersects(f); pass++) {
         // Keep the single largest loop — the outer boundary — and drop the rest.
         let best: Ring | null = null;
         let bestArea = -1;
@@ -393,12 +389,14 @@ export class HuygensFireModel implements IFireModel {
         }
         if (best) {
           if (signedArea2(best) >= 0) reverseRing(best); // normalise to CCW-on-screen
-          next.push(makeFront(best, f.id));
+          f = makeFront(best, f.id);
+        } else {
+          f = null; // the whole front collapsed to slivers — dropped; its cells stay burned
         }
-        // else: the whole front collapsed to slivers — dropped; its cells stay burned.
       }
-      this.fronts = next;
+      if (f !== null) fronts[keep++] = f;
     }
+    fronts.length = keep;
   }
 
   /**

@@ -97,7 +97,7 @@ export interface MarkerVelocity {
  * ```
  *   p = x_s·u + y_s·v          along the head
  *   q = x_s·v − y_s·u          across it
- *   D = √(b²·q² + a²·p²)       (FARSITE's h → a, f → b)
+ *   D = √(a²·q² + b²·p²)       (FARSITE's h → a, f → b)
  * ```
  *
  * turns `grow()` into the same algebra with **no trigonometry at all**:

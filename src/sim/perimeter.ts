@@ -197,7 +197,8 @@ export function segmentCross(
  * at that vertex, which is not a crossing. Returns `null` for a simple ring.
  *
  * O(n²). It is the hot part of {@link decrossRing}, and the reason the model runs
- * decrossing at most once per tick rather than per substep; if a profile at scale
+ * decrossing once per tick (after the substeps, not inside them), testing each
+ * front once and re-testing only a front it just replaced; if a profile at scale
  * shows it dominating, the pair search buckets by cell (each edge only meets edges
  * sharing a cell). Kept naive until that profile says otherwise.
  */
