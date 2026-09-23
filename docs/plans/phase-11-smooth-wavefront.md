@@ -1,12 +1,15 @@
 # Phase 11 — the smooth wavefront (Huygens marker points)
 
-> **Status: Stages 0 and 1 SHIPPED.** `spreadEngine: 'huygens'` runs a marker
+> **Status: Stages 0, 1 and 2 SHIPPED.** `spreadEngine: 'huygens'` runs a marker
 > front end to end — Richards' equations, substepping, density control, barriers,
-> seeding, rasterisation — and §7's table is measured below. `'raster'` remains
-> the default, so nothing in [`docs/science.md`](../science.md) has moved.
-> **Stage 2** (perimeter merging) and **Stage 3** (crossover removal, then the
-> call on the default) are still to do; §D8's burnable enclaves stay out of scope
-> for the phase.
+> seeding, rasterisation (Stages 0–1), and **merging + ring retirement**
+> (Stage 2) — and §7's table is measured below. `'raster'` remains the default, so
+> nothing in [`docs/science.md`](../science.md) has moved. **Stage 3** (crossover
+> removal for a single self-intersecting front, then the call on the default) is
+> still to do; §D8's burnable enclaves stay out of scope for the phase.
+>
+> **Stage 2's merge is grid-assisted, not a transcription of FARSITE's
+> `MergeFireRings` — a deliberate reversal of §D6, recorded in §D6 below.**
 
 **Goal:** stop carrying the fire as a raster of finitely many rays. Carry it as a
 **polygon of marker points** that each advance by Richards' (1990) elliptical
@@ -333,10 +336,36 @@ With intensity-driven spotting mounted (§6) the shipped presets throw brands
 300–1300 m, so `timber-crown-run` carries **multiple concurrent perimeters from
 the first ember**, and they merge once they have grown together — minutes to
 tens of minutes, not immediately. Either way a Huygens front that cannot merge is
-not usable on the presets that already exist. FARSITE's machinery:
-`Intersections::FindFirePerimeter` / `FindOuterFirePerimeter` and
-`StandardizePolygon::Cross` in `newclip.cpp`, `PostFrontal::MergeFireRings` in
-`fsxpfront.cpp`.
+not usable on the presets that already exist.
+
+**Stage 2 as shipped reverses the original D6 mechanism.** The plan named
+FARSITE's `Intersections::FindFirePerimeter` / `FindOuterFirePerimeter`,
+`StandardizePolygon::Cross` (`newclip.cpp`) and `PostFrontal::MergeFireRings`
+(`fsxpfront.cpp`) as the machinery to port. Reading that source at
+implementation time made the case against a transcription:
+
+- `MergeFireRings` (`fsxpfront.cpp:2774`) is bound to FARSITE's `FireRing` /
+  `PerimPoints` / `MergePoints` **post-frontal-combustion** structures and its
+  overlap-area *apportionment* — a subsystem (fuel consumed per unit area behind
+  the front, for smoke/emissions) this sandbox does not model at all. Porting it
+  faithfully would drag in thousands of lines for a feature that does not exist.
+- **The raster the rings paint is already their exact union.** A cell ignites
+  once; the `fire`/`intensity`/`crown` layers every consumer reads are correct
+  without any polygon boolean. What was actually broken without merging was only
+  the *front geometry* in an overlap and the *cost* of never-retired rings.
+
+So Stage 2 merges **on the grid, not on the polygons**. Every cell records the
+first front to paint it (`owner`); a marker stepping onto another front's ground
+is blocked, so two fronts that meet **weld** along their contact instead of
+running through each other, and a front all of whose markers are blocked —
+enveloped, or jammed against barriers/edges — is **retired**, which is the cost
+half of this decision (an enclosed ring otherwise recomputes an outward push
+forever). The seam between two welded fronts is a stalled arc of markers, not a
+re-solved single polygon; since no system reads the polygons, that is invisible
+downstream, and the Stage 2 gates (suppression, spotting, a `timber-crown-run`
+hour, intensity defined across every merged cell) all pass on it. Two-polygon
+boolean union stays available to Stage 3 if a case ever needs the exact merged
+outline; nothing so far does.
 
 ### D7 — Perimeter maintenance is four operations, all named
 
@@ -473,22 +502,28 @@ marker front has no perimeter there. The equivalent on this path is sharper and
 is what `tests/huygens.test.ts` asserts instead — a point ignition's radius is
 R₀·t at *every* angle, which is the rate check and the isotropy check at once.
 
-**Stage 2 — merging (D6).** *(barriers (D4) and external ignitions (D5) landed in Stage 1)*
-*Gate:* `tests/suppression.test.ts` passes unmodified on the Huygens path;
-`tests/spotting.test.ts` passes; `timber-crown-run` runs a simulated hour without
-producing a degenerate perimeter. Plus the merge half of §5c's intensity
-attribution — after a merge, every cell inside the merged region carries a
-**defined** intensity, nothing swallowed silently at zero. (§5c's *other* check,
-that a flank segment records lower intensity than the head, and the barrier pair,
-are both already pinned in `tests/huygens.test.ts` by Stage 1.)
+**Stage 2 — merging + ring retirement (D6).** ✅ *(barriers (D4) and external
+ignitions (D5) landed in Stage 1.)* Grid-assisted, not a polygon-union port — the
+mechanism and the reasoning are in D6 above. Per-cell `owner` welds fronts that
+touch; a front with no open move anywhere in a tick is retired.
+*Gate met:* six new tests in `tests/huygens.test.ts` — two fronts weld with no
+cold seam and every merged cell carries a defined intensity (§5c's merge half),
+an enveloped/barrier-locked front is retired while its interior stays burnt (the
+cost half), spotting throws concurrent perimeters across a firebreak and stays
+finite and bounded, a one-cell cut line holds a planar multi-front ignition (Gate
+1, suppression, on this path) and a gap in it leaks, and **`timber-crown-run`
+steps a full simulated hour** (3600 s at 64²) without a degenerate or runaway
+perimeter, every burning cell intensity-defined, no marker non-finite. Full suite
+443 pass, determinism gate still green. (§5c's *other* check — a flank segment
+cooler than the head — and the barrier pair were already pinned by Stage 1.)
 
-**And a cost hazard that surfaces here, not in Stage 1.** Rings are never
-retired, and burning does not change a cell's fuel id — so a marker inside the
-burn scar still passes the burnable test and keeps moving, and a ring wholly
-enclosed by burnt ground expands forever. Output stays correct (painting
-short-circuits on an already-ignited cell); the cost does not. Retiring a ring is
-part of merging, which is why they belong to the same stage. This is the reason
-`timber-crown-run` is not measured in §7a.
+**The cost hazard this stage was built to answer.** Before retirement, a ring
+wholly enclosed by burnt ground kept recomputing an outward push forever (burning
+does not change a cell's fuel id, so its markers still pass the burnable test),
+and a preset throwing hundreds of embers accumulated hundreds of ever-growing
+rings. Retirement — dropping a front once every marker is blocked — is what bounds
+it; measured, `timber-crown-run` at 64² holds a few hundred concurrent fronts
+over the hour rather than growing without limit.
 
 **Stage 3 — crossover/loop removal (D7), and the decision on the default.**
 *Gate:* a front driven around a nonburnable island produces a valid simple
@@ -615,7 +650,10 @@ path, and D8's burnable-enclave gap opens in its place.
    `fireModel` options; a preset for the shape harness.
 6. Stage 1 measurement in `M:\claud_projects\temp\phase11\`; write §7's table
    as-measured.
-7. Stage 2: barrier guard, external-ignition seeding, merging. Suppression and
-   spotting tests on the Huygens path.
-8. Stage 3: crossover removal, determinism test, profile, then the default call.
+7. Stage 2 ✅: merging (grid-assisted per-cell `owner` weld, D6) + ring
+   retirement. Suppression, spotting, two-front weld, retirement and a
+   `timber-crown-run` hour pinned on the Huygens path. (Barrier guard and
+   external-ignition seeding landed in Stage 1.)
+8. Stage 3: crossover removal for a single self-intersecting front, determinism
+   test, profile at 512², then the default call.
 9. `docs/science.md` §1c + §9 retarget; update this doc's status; memory note.

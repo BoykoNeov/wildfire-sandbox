@@ -49,38 +49,67 @@ import { SurfaceBehaviour, type SurfaceBehaviourOptions } from './surfaceBehavio
  * band → write `fire`, and `intensity` / `crown` / `burnElapsed` on the cells
  * that flipped, in the same places the raster model writes them.
  *
- * ### Stage 1 scope
+ * ### Scope (Stages 1–2)
  *
- * Advance, substepping, density control, barriers, seeding and rasterisation.
- * **Not yet:** merging two perimeters that have grown together (§D6), crossover
- * and loop removal (§D7), or burnable enclaves, which are declared out of scope
- * for the phase entirely (§D8). Until merging lands, two rings that overlap keep
- * burning through each other's ground; the raster they paint is still correct
- * (a cell ignites once and stays ignited) but the *shape* of an overlap is not.
+ * Advance, substepping, density control, barriers, seeding, rasterisation
+ * (Stage 1), and **merging plus ring retirement** (Stage 2, §D6). **Not yet:**
+ * crossover and loop removal for a *single* self-intersecting front (§D7,
+ * Stage 3), and burnable enclaves, which are out of scope for the phase entirely
+ * (§D8).
  *
- * **The sharper reason not to mount this on a preset with spotting is cost, not
- * shape.** {@link fronts} is never retired, and burning does not change a cell's
- * fuel id — so a marker sitting inside the burn scar still passes the burnable
- * test and keeps moving, and a ring wholly enclosed by burnt ground expands
- * forever. The output stays correct, because painting short-circuits on an
- * already-ignited cell; the *work* does not, and a preset throwing hundreds of
- * embers accumulates hundreds of ever-growing rings. Retiring a ring is properly
- * part of merging, which is why they are one stage.
+ * **Merging here is grid-assisted, not a polygon-union transcription** — a
+ * deliberate, documented reversal of §D6's "port FARSITE's `MergeFireRings`".
+ * FARSITE's routine is bound to its `FireRing`/post-frontal area-apportionment
+ * subsystem, which this sandbox does not model, and the raster the rings paint is
+ * already their exact union (a cell ignites once). So instead of clipping two
+ * polygons together, every cell records the {@link owner} that first painted it,
+ * and a marker stepping onto another front's ground is *blocked* ({@link advance}):
+ * two fronts that meet weld along their contact instead of running through each
+ * other, and a front all of whose markers are blocked — enveloped by other burns,
+ * or jammed against barriers and the map edge — has nowhere to grow and is
+ * **retired** at the end of the tick. That retirement is the cost half of §D6:
+ * without it a ring the burn has swallowed keeps recomputing an outward push
+ * forever, and a preset throwing hundreds of embers accumulates hundreds of
+ * ever-growing rings. The seam between two welded fronts is a stalled arc of
+ * markers rather than a re-solved single polygon; no consumer reads the polygons,
+ * so the distinction is invisible downstream.
  *
- * Determinism (§D9): rings advance in creation order, points in ring order from
- * a pinned start vertex, and the seeding scan runs in cell-index order. No RNG —
+ * Determinism (§D9): rings advance in creation order (front ids are monotonic),
+ * retirement filters in place preserving that order, points advance in ring order
+ * from a pinned start vertex, and the seeding scan runs in cell-index order. No RNG —
  * nothing here wants one. `tests/huygens.test.ts` pins it by running the same
  * scenario twice and comparing a hash of the three output layers.
  */
 
 /** A perimeter plus the per-marker scratch the current substep filled. */
 interface Front extends Ring {
+  /**
+   * Creation-order id, stable for the front's whole life. Every cell records the
+   * id of the **first** front to paint it ({@link HuygensFireModel.owner}); a
+   * marker of front F stepping onto a cell some *other* front already owns is
+   * interior to that front's burn and stops there — that stop, aggregated, is how
+   * two perimeters that have grown together weld into one and how an enveloped
+   * ring is detected and retired (§D6). Determinism (§D9) leans on this being
+   * assigned in creation order.
+   */
+  id: number;
   /** Velocity [cells/s], one per vertex. */
   vx: number[];
   vy: number[];
   /** Fireline intensity [kW/m] and crown type of the marker's own motion. */
   fli: number[];
   crown: number[];
+  /**
+   * Did *any* marker have an open (unblocked) move somewhere this tick? A front
+   * for which every marker was blocked — by the map edge, nonburnable fuel, or
+   * another front's owned ground — is a geometric dead end: it has nowhere left to
+   * grow, so it is retired at the end of the tick (§D6's cost half — otherwise a
+   * ring enclosed by burnt ground keeps recomputing an outward push forever). A
+   * merely *slow* front, whose markers sit still on their own or on open ground
+   * without being rejected, is not blocked and is kept, because conditions
+   * (wind, moisture) can still start it moving on a later tick.
+   */
+  open: boolean;
 }
 
 export interface HuygensFireModelOptions extends SurfaceBehaviourOptions {
@@ -131,13 +160,25 @@ export class HuygensFireModel implements IFireModel {
   private readonly seedVertices: number;
 
   /** Perimeters, in creation order (§D9). */
-  private readonly fronts: Front[] = [];
+  private fronts: Front[] = [];
+  /** Next front id — monotonic, so ids order fronts by creation (§D9). */
+  private nextFrontId = 0;
   /**
-   * Per cell: does some perimeter already account for this cell? Set when a ring
-   * paints a cell or is seeded at one, and never cleared — a burnt-over cell is
-   * still accounted for, and re-seeding it would restart a fire on ash.
+   * Per cell: which front (by {@link Front.id}) first accounted for this cell, or
+   * `-1` for none. Set when a ring paints a cell or is seeded at one, and never
+   * cleared — a burnt-over cell is still accounted for, so re-seeding it would
+   * restart a fire on ash, and the *first* owner is the front whose intensity the
+   * cell keeps.
+   *
+   * The owner is what turns overlapping rings into one fire without any polygon
+   * clipping (§D6): a marker stepping onto another front's cell stops, so two
+   * fronts that meet weld along their contact instead of burning through each
+   * other, and a ring all of whose markers land on other fronts' ground is
+   * enveloped and retired. The union those rings paint into `fire` was always
+   * correct (a cell ignites once); ownership makes the *front* correct and the
+   * *cost* bounded too.
    */
-  private claimed: Uint8Array | null = null;
+  private owner: Int32Array | null = null;
 
   // Scratch reused across markers.
   private readonly dim: EllipseDimensions = { a: 0, b: 0, c: 0 };
@@ -165,10 +206,10 @@ export class HuygensFireModel implements IFireModel {
     const crown = layers.crown.data;
     const behaviour = this.behaviour;
 
-    if (this.claimed === null || this.claimed.length !== fire.length) {
-      this.claimed = new Uint8Array(fire.length);
+    if (this.owner === null || this.owner.length !== fire.length) {
+      this.owner = new Int32Array(fire.length).fill(-1);
     }
-    const claimed = this.claimed;
+    const owner = this.owner;
 
     // ── 1. Burnout, the externally-lit intensity fallback, and seeding ───────
     //
@@ -188,24 +229,39 @@ export class HuygensFireModel implements IFireModel {
       burnElapsed[i] += dt;
       if (burnElapsed[i] >= behaviour.residenceSec(fuelL[i], rf)) fire[i] = FireState.Burned;
 
-      if (claimed[i] === 0) {
-        claimed[i] = 1;
+      if (owner[i] < 0) {
+        const id = this.nextFrontId++;
+        owner[i] = id;
         const x = i % width;
         const y = (i / width) | 0;
-        this.fronts.push(makeFront(seedRing(x + 0.5, y + 0.5, this.seedRadius, this.seedVertices)));
+        this.fronts.push(makeFront(seedRing(x + 0.5, y + 0.5, this.seedRadius, this.seedVertices), id));
       }
     }
     if (this.fronts.length === 0) return;
 
     // ── 2. Advance, in substeps ──────────────────────────────────────────────
+    // A front is retired at the end of the tick if it never found an open move —
+    // clear the per-tick flag now, and let `advance` set it (§D6).
+    for (const f of this.fronts) f.open = false;
     let remaining = dt;
     for (let s = 0; s < MAX_SUBSTEPS && remaining > 1e-9; s++) {
       const maxSpeed = this.computeVelocities(world);
       if (!(maxSpeed > 0)) break;
       // FARSITE's `limgrow`: clamp the advance and decrement the remaining time.
       const sub = Math.min(remaining, this.maxAdvance / maxSpeed);
-      this.advance(world, sub, fire, fuelL, intensity, crown, burnElapsed, claimed);
+      this.advance(world, sub, fire, fuelL, intensity, crown, burnElapsed, owner);
       remaining -= sub;
+    }
+
+    // ── 3. Retire enveloped / dead-ended fronts (§D6) ────────────────────────
+    // A front with no open move anywhere this tick has nowhere left to grow: its
+    // markers are all against the map edge, nonburnable fuel, or ground another
+    // front owns. Dropping it neither un-burns a cell (owner and `fire` keep
+    // their values) nor lets it re-seed (its cells are owned), it only stops the
+    // wasted per-tick recompute of a ring the burn has swallowed. Filtering in
+    // place preserves creation order, so determinism (§D9) is untouched.
+    if (this.fronts.some((f) => !f.open)) {
+      this.fronts = this.fronts.filter((f) => f.open);
     }
   }
 
@@ -330,7 +386,7 @@ export class HuygensFireModel implements IFireModel {
     intensity: Float32Array,
     crown: Uint8Array,
     burnElapsed: Float32Array,
-    claimed: Uint8Array,
+    owner: Int32Array,
   ): void {
     const { width, height } = world;
     const behaviour = this.behaviour;
@@ -348,17 +404,26 @@ export class HuygensFireModel implements IFireModel {
         const ny = ys[k] + vy[k] * sub;
         const cx = Math.floor(nx);
         const cy = Math.floor(ny);
-        // Off the map, or into fuel that will not carry: stay put. (FARSITE's
-        // `limgrow` likewise pins a point that would leave the landscape.)
-        if (
-          cx < 0 || cy < 0 || cx >= width || cy >= height ||
-          !behaviour.burnableFuel(fuelL[cy * width + cx])
-        ) {
+        // A marker is *blocked* — pinned in place this substep — by any of three
+        // things: the map edge, fuel that will not carry (FARSITE's `limgrow`
+        // likewise pins a point leaving the landscape or hitting a barrier), or a
+        // cell some *other* front already owns. That last case is the weld: two
+        // fronts that have grown together stop pushing into each other's burn
+        // instead of running through it (§D6). A blocked marker leaves `open`
+        // untouched; an open move sets it, and a front that finds no open move
+        // all tick is retired.
+        const j = cx < 0 || cy < 0 || cx >= width || cy >= height ? -1 : cy * width + cx;
+        const blocked =
+          j < 0 ||
+          !behaviour.burnableFuel(fuelL[j]) ||
+          (owner[j] >= 0 && owner[j] !== f.id);
+        if (blocked) {
           newX[k] = xs[k];
           newY[k] = ys[k];
         } else {
           newX[k] = nx;
           newY[k] = ny;
+          f.open = true;
         }
       }
 
@@ -367,13 +432,28 @@ export class HuygensFireModel implements IFireModel {
         const paint = (px: number, py: number): void => {
           if (px < 0 || py < 0 || px >= width || py >= height) return;
           const i = py * width + px;
-          claimed[i] = 1;
+          // First front to touch a cell owns it (and, below, sets its intensity):
+          // ownership is what lets a later front's markers recognise this ground
+          // as already burning and weld to it rather than burn through (§D6).
+          if (owner[i] < 0) owner[i] = f.id;
           if (fire[i] !== FireState.Unburned) return;
           if (!behaviour.burnableFuel(fuelL[i])) return;
           fire[i] = FireState.Burning;
           burnElapsed[i] = 0;
-          intensity[i] = fli[k];
-          crown[i] = mc[k];
+          if (fli[k] > 0) {
+            intensity[i] = fli[k];
+            crown[i] = mc[k];
+          } else {
+            // The marker's own motion carried no intensity — its vertex sat on a
+            // marginal or off-cell where {@link computeVelocities} bailed, yet the
+            // segment it paints crossed a burnable cell. Give that cell its own
+            // head-fire value now, in the same tick, rather than leaving a zero
+            // for the next tick's fallback (§5c): spotting and the crown test read
+            // `intensity` the moment this tick's fire model returns, and a zero
+            // there reads as "no fire".
+            const rf = this.fuel.getParams(fuelL[i]).rothermel;
+            if (rf) this.recordHeadFire(world, i, rf);
+          }
         };
         // The marker's own path...
         traverseSegment(xs[k], ys[k], newX[k], newY[k], paint);
@@ -430,15 +510,17 @@ export class HuygensFireModel implements IFireModel {
   }
 }
 
-function makeFront(ring: Ring): Front {
+function makeFront(ring: Ring, id: number): Front {
   const n = ring.xs.length;
   return {
+    id,
     xs: ring.xs,
     ys: ring.ys,
     vx: new Array(n).fill(0),
     vy: new Array(n).fill(0),
     fli: new Array(n).fill(0),
     crown: new Array(n).fill(0),
+    open: false,
   };
 }
 

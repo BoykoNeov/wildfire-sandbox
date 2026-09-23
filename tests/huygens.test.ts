@@ -4,8 +4,10 @@ import { Simulation } from '../src/core/simulation';
 import type { System } from '../src/core/system';
 import { Anderson13FuelModel, ANDERSON_13, deadFuelBed } from '../src/sim/anderson13';
 import { HuygensFireModel } from '../src/sim/huygensFireModel';
+import { SpottingSystem } from '../src/sim/spottingSystem';
 import { UniformWeatherProvider } from '../src/sim/uniformWeather';
 import { Fuel } from '../src/sim/basicFuelModel';
+import { TerrainFuelModel } from '../src/sim/terrainFuelModel';
 import { surfaceSpread, ftPerMinToMetersPerSec, metersPerSecToFtPerMin } from '../src/sim/rothermel';
 import { byteToFraction } from '../src/core/moisture';
 import { loadScenario } from '../src/scenario/scenario';
@@ -303,6 +305,241 @@ describe('Huygens marker front — wired into the scenario pipeline', () => {
     for (const v of l.world.layers.fire.data) if (v !== FireState.Unburned) touched++;
     expect(touched).toBeGreaterThan(3);
   });
+});
+
+/**
+ * A flat homogeneous field lit at two points `apart` cells either side of centre,
+ * sized so each head travels ~`travel` cells in `steps` ticks — chosen so the two
+ * fires overlap well before the run ends.
+ */
+function twoIgnition(size: number, steps: number, travel: number, apart: number): WorldState {
+  const cellSize = (analyticHeadMps(0) * steps) / travel;
+  const world = createWorld({ width: size, height: size, seed: 1, cellSize });
+  world.layers.fuel.data.fill(FM);
+  world.layers.moisture.data.fill(MOIST);
+  const cy = size >> 1;
+  world.layers.fire.set((size >> 1) - (apart >> 1), cy, FireState.Burning);
+  world.layers.fire.set((size >> 1) + (apart >> 1), cy, FireState.Burning);
+  return world;
+}
+
+describe('Huygens marker front — two perimeters merge (Stage 2, §D6)', () => {
+  it('two fronts that grow together weld into one burn with no cold seam', () => {
+    // The heart of Stage 2. Two separate ignitions each seed their own perimeter;
+    // as they grow together the markers of one step onto ground the other owns and
+    // stop there, so the fires join instead of burning through each other. The
+    // discriminator is the lens between them: if the weld worked, the whole
+    // segment joining the two ignition points is burned — no unburned seam — and
+    // every cell of it carries a real intensity (nothing swallowed at zero, §5c).
+    const size = 121;
+    const steps = 240;
+    const apart = 16;
+    const world = twoIgnition(size, steps, 22, apart);
+    const model = new HuygensFireModel(new Anderson13FuelModel());
+    new Simulation(world, [model]).run(steps, 1);
+
+    const cy = size >> 1;
+    const left = (size >> 1) - (apart >> 1);
+    const right = (size >> 1) + (apart >> 1);
+    for (let x = left; x <= right; x++) {
+      expect(world.layers.fire.get(x, cy)).not.toBe(FireState.Unburned);
+    }
+    // Every burning cell — including the swept-together lens — has a defined intensity.
+    let burning = 0;
+    for (let i = 0; i < world.layers.fire.data.length; i++) {
+      if (world.layers.fire.data[i] === FireState.Unburned) continue;
+      expect(world.layers.intensity.data[i]).toBeGreaterThan(0);
+      burning++;
+    }
+    // …and the merged burn is a sane size (two overlapping disks), not an explosion.
+    expect(burning).toBeGreaterThan(200);
+    expect(burning).toBeLessThan(size * size);
+  });
+
+  it('a front enclosed by burnt/nonburnable ground is retired (cost bound, §D6)', () => {
+    // The cost half of merging: a ring with nowhere left to grow must be dropped,
+    // or it recomputes an outward push forever. A small burnable field boxed in by
+    // nonburnable fuel is the cleanest case — the fire fills the interior, then
+    // every marker is against the box and the front is retired, leaving the
+    // interior fully burned. (In dense spotting the same mechanism retires a spot
+    // fire the main burn has grown all the way around.)
+    const size = 31;
+    const steps = 400;
+    const cellSize = (analyticHeadMps(0) * steps) / 40; // head crosses the field well within the run
+    const world = createWorld({ width: size, height: size, seed: 1, cellSize });
+    world.layers.fuel.data.fill(Fuel.Nonburnable);
+    // A burnable interior box [8, 23) with a nonburnable frame around it.
+    for (let y = 8; y < 23; y++) {
+      for (let x = 8; x < 23; x++) {
+        world.layers.fuel.set(x, y, FM);
+        world.layers.moisture.set(x, y, MOIST);
+      }
+    }
+    world.layers.fire.set(size >> 1, size >> 1, FireState.Burning);
+    const model = new HuygensFireModel(new Anderson13FuelModel());
+    const sim = new Simulation(world, [model]);
+
+    let peak = 0;
+    for (let k = 0; k < 20; k++) {
+      sim.run(steps / 20, 1);
+      peak = Math.max(peak, model.perimeters.length);
+    }
+    // The front had a life and then ended it: at least one existed, and by the end
+    // — the interior full, every marker jammed against the frame — none remain.
+    expect(peak).toBeGreaterThan(0);
+    expect(model.perimeters.length).toBe(0);
+    // Retirement did not un-burn: the burnable interior is (almost) all alight.
+    let interiorBurnt = 0;
+    for (let y = 8; y < 23; y++) {
+      for (let x = 8; x < 23; x++) {
+        if (world.layers.fire.get(x, y) !== FireState.Unburned) interiorBurnt++;
+      }
+    }
+    expect(interiorBurnt).toBeGreaterThan(15 * 15 * 0.9);
+  });
+});
+
+describe('Huygens marker front — spotting throws concurrent perimeters (Stage 2, §D6)', () => {
+  it('embers ignite across a firebreak, and the many fronts stay bounded and finite', () => {
+    // Gate 2 on this path. The spotting scenario is the reason Stage 2 exists: a
+    // sustained front parked at a nonburnable break throws embers downwind, each
+    // landing an independent ignition the marker model must seed, grow and merge.
+    // Surface spread cannot cross the break, so any far-side fire is an ember —
+    // and the run must stay well-formed (no NaN, front count bounded by retirement).
+    const W = 40;
+    const H = 13;
+    const FM_TIMBER = 10;
+    const DRY = 10;
+    const CANOPY = 200;
+    const WIND_EAST = 12;
+    const GAP_START = 20;
+    const GAP_END = 24;
+    const SOURCE_COLS = [16, 17, 18, 19];
+
+    const world = createWorld({ width: W, height: H, seed: 7, cellSize: 30 });
+    world.layers.fuel.data.fill(FM_TIMBER);
+    world.layers.moisture.data.fill(DRY);
+    world.layers.canopy.data.fill(CANOPY);
+    world.layers.windU.data.fill(WIND_EAST);
+    for (let y = 0; y < H; y++) {
+      for (let x = GAP_START; x < GAP_END; x++) {
+        world.layers.fuel.set(x, y, Fuel.Nonburnable);
+        world.layers.canopy.set(x, y, 0);
+      }
+    }
+
+    const fuel = new Anderson13FuelModel();
+    const model = new HuygensFireModel(fuel);
+    const sim = new Simulation(world, [model, new SpottingSystem(fuel)]);
+    let nan = 0;
+    let maxFronts = 0;
+    for (let s = 0; s < 150; s++) {
+      for (const x of SOURCE_COLS) {
+        for (let y = 0; y < H; y++) {
+          world.layers.fire.set(x, y, FireState.Burning);
+          world.layers.burnElapsed.data[y * W + x] = 0;
+        }
+      }
+      sim.step(1);
+      maxFronts = Math.max(maxFronts, model.perimeters.length);
+      for (const r of model.perimeters) for (const v of r.xs) if (!Number.isFinite(v)) nan++;
+    }
+
+    let farside = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = GAP_END; x < W; x++) {
+        if (world.layers.fire.get(x, y) !== FireState.Unburned) farside++;
+      }
+    }
+    expect(farside).toBeGreaterThan(0); // embers crossed
+    expect(nan).toBe(0); // the fronts stayed well-formed
+    expect(maxFronts).toBeLessThan(W * H); // and bounded — retirement kept a lid on it
+  });
+});
+
+describe('Huygens marker front — a cut line still holds under merging (Stage 2, Gate 1)', () => {
+  it('a one-cell CutLine holds a planar multi-front ignition; a gap in it leaks', () => {
+    // Suppression on this path. A whole-column ignition seeds a *row* of separate
+    // perimeters that grow east and merge into one planar front — so this is a
+    // merge stress test as well as the Phase-4 containment doctrine. The line is a
+    // single CutLine column (nonburnable via TerrainFuelModel); the substep cap
+    // plus the fuel test at each marker's new position is what stops a marker from
+    // stepping over it, exactly as for the raster front's supercover gate.
+    const W = 48;
+    const H = 13;
+    const DRY = 10;
+    const WIND_EAST = 6;
+    const LINE_X = 24;
+
+    const build = (gap: boolean): WorldState => {
+      const world = createWorld({ width: W, height: H, seed: 1, cellSize: 30 });
+      world.layers.fuel.data.fill(Fuel.Grass);
+      world.layers.moisture.data.fill(DRY);
+      world.layers.windU.data.fill(WIND_EAST);
+      for (let y = 0; y < H; y++) world.layers.fire.set(0, y, FireState.Burning);
+      for (let y = 0; y < H; y++) {
+        if (gap && y === H >> 1) continue;
+        world.layers.fuel.set(LINE_X, y, Fuel.CutLine);
+      }
+      return world;
+    };
+
+    const farIgnited = (world: WorldState, x0: number): number => {
+      let n = 0;
+      for (let y = 0; y < H; y++) for (let x = x0; x < W; x++) {
+        if (world.layers.fire.get(x, y) !== FireState.Unburned) n++;
+      }
+      return n;
+    };
+
+    const sealed = build(false);
+    new Simulation(sealed, [new HuygensFireModel(new TerrainFuelModel())]).run(400, 1);
+    expect(farIgnited(sealed, LINE_X - 1)).toBeGreaterThan(0); // the front arrived…
+    expect(farIgnited(sealed, LINE_X + 1)).toBe(0); // …and nothing crossed the line
+
+    const leaky = build(true);
+    new Simulation(leaky, [new HuygensFireModel(new TerrainFuelModel())]).run(400, 1);
+    expect(farIgnited(leaky, LINE_X + 1)).toBeGreaterThan(0); // one gap and it gets through
+  });
+});
+
+describe('Huygens marker front — the spotting preset runs a simulated hour (Stage 2, §D6)', () => {
+  it('timber-crown-run steps a full hour without a degenerate or runaway perimeter', () => {
+    // The Stage 2 acceptance run. `timber-crown-run` carries multiple concurrent
+    // perimeters from its first ember, so it exercises seeding, merging and
+    // retirement together for a simulated hour. The gate is that it stays healthy:
+    // it completes, the fire grows, every burning cell has a defined intensity,
+    // no marker goes non-finite, and the front count stays bounded (retirement
+    // holds it well under one-front-per-cell).
+    const base = findPreset('timber-crown-run')!;
+    const SZ = 64;
+    // The preset's ignition and crew/engine/aircraft coordinates are absolute to
+    // its 256² map; on a 64² test map they fall off the edge, so ignite at centre
+    // and drop the (off-map) agents. Spotting stays on — it is the whole point,
+    // and what makes this the multi-perimeter Stage 2 run.
+    const l = loadScenario({
+      ...base,
+      width: SZ,
+      height: SZ,
+      spreadEngine: 'huygens',
+      ignitions: 'center',
+      agents: undefined,
+    });
+    const model = l.systems.find((s) => s.name === 'fire:huygens') as HuygensFireModel;
+    l.sim.run(3600, 1); // one simulated hour at dt = 1 s
+
+    let burned = 0;
+    let nan = 0;
+    for (let i = 0; i < l.world.layers.fire.data.length; i++) {
+      if (l.world.layers.fire.data[i] === FireState.Unburned) continue;
+      burned++;
+      expect(l.world.layers.intensity.data[i]).toBeGreaterThan(0);
+    }
+    for (const r of model.perimeters) for (const v of r.xs) if (!Number.isFinite(v)) nan++;
+    expect(burned).toBeGreaterThan(300);
+    expect(nan).toBe(0);
+    expect(model.perimeters.length).toBeLessThan(SZ * SZ);
+  }, 60_000);
 });
 
 describe('Huygens marker front — determinism', () => {
