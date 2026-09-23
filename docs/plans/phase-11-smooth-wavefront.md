@@ -422,12 +422,25 @@ orientation. Out of scope for Phase 11.
 
 **How the shipped D7 realises this (a change from the original wording).** The
 plan said such a pocket would be "treated as burned once the outer ring closes."
-The keep-largest crossover removal does the opposite and it is cleaner: when the
-front closes around a pocket, the pocket's boundary comes out as one of the
-*discarded* inner loops, so the pocket is **left unburned — an interior hole** —
-rather than filled. Its cells were never painted, so nothing is falsified; a real
-fire does leave unburned islands. This goes into `docs/science.md` §9 as the *new*
-named gap replacing the smooth-wavefront bullet, whenever the default flips.
+The keep-largest crossover removal does the opposite: when the front closes around
+a pocket, the pocket's boundary comes out as one of the *discarded* inner loops, so
+the pocket is **left unburned — an interior hole** — rather than filled. Its cells
+were never painted, so nothing is falsified; a real fire does leave unburned
+islands. This goes into `docs/science.md` §9 as the *new* named gap replacing the
+smooth-wavefront bullet, whenever the default flips.
+
+**Measured, the concern is smaller than feared.** The advisor's worry was that a
+fast front wrapping a *slower or damper* patch — routine in the mixed-fuel presets,
+not just a rare enclave — would close its lips first, drop the inner loop and
+abandon the patch, burning *less* than the raster there. On a direct test (dry FM1
+with a patch damped to just below its extinction moisture, wind 3 m/s) the opposite
+held: Huygens burned **219 of 256** patch cells against the raster's **164** — the
+smooth front burns *more* of the patch, not less, because a damp-but-burnable patch
+is entered before it is enclosed, and the smooth front's known tendency to burn
+more (§9) dominates. The unburned-hole artifact is therefore real only for a pocket
+that genuinely seals — nonburnable-ringed, or so slow the lips close first — which
+the mounted scenarios do not routinely produce. The number goes in §7b's ledger as
+*not* a strike against Huygens on the fuels tested.
 
 ### D9 — Determinism gets ordering rules and its own test
 
@@ -601,9 +614,12 @@ and in `tests/huygens.test.ts`, a front wrapping a nonburnable island is simple
 every run where the un-removed run tangles (windless and windy), a wind-driven
 fold holds under 3 000 markers instead of running away, burned area matches a
 `decross: false` run to within a cell, and the `timber-crown-run` hour now also
-asserts **zero self-crossings** across the whole run. Determinism (spotting on)
-still byte-identical. Full suite 454. **The profile at 512² is §7b below and it
-fits the frame budget**, so the naive O(n²) crossing search is left as-is.
+asserts **zero self-crossings** across the whole run (the island gate checks
+simplicity every tick). Determinism (spotting on) still byte-identical. Full suite
+454. **The 512² profile is §7b below**; the crossover search stays naive because it
+is *not* the cost driver — the single-ring case is 1.75 ms/step at one hour, and
+what busts the budget at 512² is the marker count of the many fronts a spotting
+fire carries, not O(n²) on one ring (so bucketing would not save it).
 
 **Carry forward that held:** grid-welding leaves two merged fronts as two
 overlapping polygons, *not* one self-crossing perimeter, and crossover removal
@@ -695,42 +711,55 @@ in this document unchanged.
 
 ### 7b. As measured (Stage 3) — the 512² profile and the default call
 
-`npm run profile -- timber-crown-run 1200 --size=512 --engine=<engine>` (the
-`--engine` flag is new this stage, so the marker front can be profiled without a
-temporary preset edit), on the same idle machine as the Stage-1 numbers. Per
-`step`, ms:
+`npm run profile -- timber-crown-run <steps> --size=512 --engine=<engine>
+[--spotting=off]` (the `--engine` and `--spotting` flags are new this stage, so
+the marker front and the single-ring worst case can be profiled without a
+temporary preset edit), on the same idle machine as the Stage-1 numbers. The first
+cut of this section reported the 1 200-step average and called Huygens "within
+budget"; **that was wrong, and the advisor caught it** — the profiler averages
+ms/step over the run, the fire is still small at 1 200 steps, and the O(n²)
+crossover search and the marker count both grow with the fire, so the cheap early
+ticks hid the expensive late ones. Measured properly (`fire:*` ms/step):
 
-| system | huygens | raster |
+| run (512²) | huygens | raster |
 |---|---|---|
-| `fire:*` | **5.41** | 1.13 |
-| `fire:spotting` | 0.62 | 0.49 |
-| everything else | 0.92 | 0.77 |
-| **sim TOTAL** | **6.95** | 2.38 |
+| 1 200 steps, spotting on | 5.41 | 1.13 |
+| **3 600 steps (1 h), spotting on** | **41.97** | 1.16 |
+| 3 600 steps, spotting **off** (single ring) | 1.75 | — |
 
-At `timeScale 60` that is 1.0 step/frame, so the sim owes its whole `step` to the
-16.67 ms frame. Huygens leaves **9.7 ms** to render; the heaviest view (terrain
-with smoke, 5.8 ms) fits inside it — **the marker front is within the 512² frame
-budget**, with ~4 ms to spare, crossover removal and all. The naive O(n²)
-self-intersection search (§D7) is therefore left as-is; it does not dominate,
-because the presets carry many small fronts rather than one giant ring, and the
-one giant-ring case that would stress it is not what the budget is spent on.
+At `timeScale 60`, 1.0 step/frame, the whole `step` owes the 16.67 ms frame. So
+the marker front is **comfortably within budget on a small or early fire, and far
+over it on a full-hour spotting fire at 512²**: `fire:huygens` averages 41.97 ms
+over the hour (sim TOTAL 43.7, i.e. **~27 ms past a bare frame with nothing left
+to render**), and the late-window average (ticks 1 201–3 600, by the deterministic
+subtraction `(3600·41.97 − 1200·5.41)/2400`) is **~60 ms/step**. The **single ring**
+(spotting off) stays cheap — 1.75 ms at one hour — so the cost is not the O(n²)
+crossover on one giant perimeter (that ring reaches only ~500 markers, `sumN²`
+~3 M); it is the **many concurrent fronts** a spotting fire carries at 512², whose
+count explodes over the hour — 429 → 6 051 live fronts and 17 k → 109 k total
+markers between ticks 1 200 and 2 400, spotting seeding new fronts on the growing
+edge faster than retirement culls them. The per-marker Rothermel/Richards work,
+done every substep, is the bill, and it is O(total markers), which bucketing the
+crossover search cannot touch. Raster is ~1.1 ms in every column.
 
-Huygens is **~4.8× the fire model and ~2.9× the whole sim** of the raster. It
-still fits; it just spends the headroom the raster leaves. (Burned area differs
-between the two columns — 4 753 vs 2 414 cells at 1 200 steps — because the smooth
-front burns more, §9, and the two throw embers on different schedules; this is the
-expected direction, not a regression.)
+**Where Huygens does fit: 256² and below.** The Stage-0/1 numbers were taken at
+256² (`fire:huygens` ~0.56 ms/step), and that is the size the shipped presets and
+the browser default run at. The 512² full-hour spotting fire is the case it misses.
 
-**The default call: keep `'raster'`.** Recommended, and left to the user because
-it is a scope decision, not a correctness one (§5d). The reasons: every measured
-number in [`docs/science.md`](../science.md) is on the raster path, so flipping
-triggers the whole §8 revalidation for a sandbox that already teaches true things
-on the cheaper model; the marker front, though within budget at 512², spends ~3×
-the sim and less of it survives to `?size=1024`; and it still carries scope gaps
-the raster does not (burnable pockets left as holes, §D8). The value Phase 11
-delivers is that the smooth front is *available* behind `spreadEngine: 'huygens'`
-for when faithfulness of shape matters — not that it must be the default. Flipping
-remains a one-line change plus the §8 recomputation whenever that trade is wanted.
+**The default call: keep `'raster'`, and now with a hard reason, not only a soft
+one.** Recommended, and left to the user as a scope decision (§5d). The soft
+reasons stand — every number in [`docs/science.md`](../science.md) is on the raster
+path (flipping triggers the §8 revalidation), and Huygens carries the §D8 hole
+caveat — but the measurement adds a hard one: **the marker front does not hold
+60 fps at 512² over a full spotting hour**, while the raster does with 14 ms to
+spare. The value Phase 11 delivers is that the smooth front is *available* behind
+`spreadEngine: 'huygens'` where its faithfulness of shape is worth the cost and the
+map is not enormous — not that it is the default. Flipping remains a one-line
+change plus the §8 recomputation.
+
+(Burned area differs between engines — e.g. 34 329 vs the raster's ~14 k at one
+hour, 512² — because the smooth front burns more, §9, and the two throw embers on
+different schedules; expected direction, not a regression.)
 
 ---
 

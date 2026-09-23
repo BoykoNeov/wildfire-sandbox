@@ -274,11 +274,16 @@ ring and the model keeps only the single largest, correctly-wound loop — burne
 area preserved to within a cell, and *faster* overall because markers stay
 bounded. Two moisture bugs the advisor caught were fixed alongside (a wet/retardant
 band is now a barrier the marker front respects; a globally-wet tick no longer
-retires every fire). At 512² the marker front profiles at 6.95 ms/step sim
-(raster 2.38) — **within the frame budget** — so **`'raster'` stays the default**
-(recommended; the flip is left to the user, §7b) and no `docs/science.md` number
-has moved. Burnable enclaves remain out of scope (§D8): a pocket the front closes
-around is left as an unburned hole.
+retires every fire). **`'raster'` stays the default** (recommended; the flip is
+left to the user, §7b) and no `docs/science.md` number has moved. Perf is the hard
+reason: at 256² the marker front is cheap (~0.56 ms/step, and that is the size the
+presets and the browser run at), but at 512² over a full spotting hour it averages
+~42 ms/step — well past the 16.67 ms frame budget the raster (~1.2 ms) holds with
+room to spare. The driver is the marker count of the many fronts a spotting fire
+carries, not the O(n²) crossover search (a single ring stays ~1.75 ms), so the
+search is left naive. Burnable enclaves remain out of scope (§D8): a pocket the
+front seals around would be left as an unburned hole, though on the fuels tested
+Huygens burns *more* of a damp patch than the raster, not less.
 
 Next: the additive future phases (WUI structures → industrial). Each phase must be
 runnable and verifiable before the next.

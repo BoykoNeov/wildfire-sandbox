@@ -39,6 +39,9 @@ if (ENGINE !== undefined && ENGINE !== 'raster' && ENGINE !== 'huygens') {
   console.error(`--engine must be 'raster' or 'huygens', got "${ENGINE}"`);
   process.exit(1);
 }
+/** `--spotting=off`: drop the spotting system, so a single perimeter is the only ring (the O(n²) crossover worst case). */
+const spottingArg = process.argv.find((a) => a.startsWith('--spotting'));
+const SPOTTING_OFF = spottingArg ? (spottingArg.split('=')[1] ?? process.argv[process.argv.indexOf(spottingArg) + 1]) === 'off' : false;
 
 const presetId = argv[0] ?? DEFAULT_PRESET_ID;
 const preset = findPreset(presetId);
@@ -52,6 +55,7 @@ const scenario = {
   ...preset,
   ...(SIZE > 0 ? { width: SIZE, height: SIZE, ignitions: 'center' as const } : {}),
   ...(ENGINE ? { spreadEngine: ENGINE as 'raster' | 'huygens' } : {}),
+  ...(SPOTTING_OFF ? { spotting: false } : {}),
 };
 const { world, sim, systems, crew, engine, aircraft, burnableCells } = loadScenario(scenario);
 const cx = world.width >> 1;

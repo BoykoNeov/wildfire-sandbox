@@ -174,6 +174,9 @@ export interface HuygensFireModelOptions extends SurfaceBehaviourOptions {
 /** Hard ceiling on substeps per tick — a fire model that hangs is worse than one that lags. */
 const MAX_SUBSTEPS = 64;
 
+/** Safety ceiling on decross passes per tick (§D7) — the loop converges well under this. */
+const MAX_DECROSS_PASSES = 8;
+
 export class HuygensFireModel implements IFireModel {
   readonly name = 'fire:huygens';
 
@@ -342,39 +345,40 @@ export class HuygensFireModel implements IFireModel {
    * is replaced by exactly one, so order is preserved.
    */
   private decrossFronts(): void {
-    let anyCrossed = false;
-    for (const f of this.fronts) {
-      if (selfIntersects(f)) {
-        anyCrossed = true;
-        break;
-      }
-    }
-    if (!anyCrossed) return;
-
-    const next: Front[] = [];
-    for (const f of this.fronts) {
-      if (!selfIntersects(f)) {
-        next.push(f);
-        continue;
-      }
-      // Keep the single largest loop — the outer boundary — and drop the rest.
-      let best: Ring | null = null;
-      let bestArea = -1;
-      for (const lp of decrossRing(f)) {
-        if (lp.xs.length < MIN_RING_VERTICES) continue; // sliver
-        const a = area(lp);
-        if (a > bestArea) {
-          bestArea = a;
-          best = lp;
+    // Iterate to a fixed point: keeping the largest loop can, on a heavily folded
+    // front, leave that loop with a crossing of its own that a second pass clears.
+    // The post-condition is "no front self-intersects", so loop until that holds
+    // (bounded — each pass strictly reduces a front's crossings, and MAX_DECROSS is
+    // a safety stop, not an expected limit). The loop body is skipped entirely on
+    // the common tick where nothing crosses, so this costs one `selfIntersects`
+    // sweep when the front is already clean.
+    for (let pass = 0; pass < MAX_DECROSS_PASSES; pass++) {
+      if (!this.fronts.some((f) => selfIntersects(f))) return;
+      const next: Front[] = [];
+      for (const f of this.fronts) {
+        if (!selfIntersects(f)) {
+          next.push(f);
+          continue;
         }
+        // Keep the single largest loop — the outer boundary — and drop the rest.
+        let best: Ring | null = null;
+        let bestArea = -1;
+        for (const lp of decrossRing(f)) {
+          if (lp.xs.length < MIN_RING_VERTICES) continue; // sliver
+          const a = area(lp);
+          if (a > bestArea) {
+            bestArea = a;
+            best = lp;
+          }
+        }
+        if (best) {
+          if (signedArea2(best) >= 0) reverseRing(best); // normalise to CCW-on-screen
+          next.push(makeFront(best, f.id));
+        }
+        // else: the whole front collapsed to slivers — dropped; its cells stay burned.
       }
-      if (best) {
-        if (signedArea2(best) >= 0) reverseRing(best); // normalise to CCW-on-screen
-        next.push(makeFront(best, f.id));
-      }
-      // else: the whole front collapsed to slivers — dropped; its cells stay burned.
+      this.fronts = next;
     }
-    this.fronts = next;
   }
 
   /**

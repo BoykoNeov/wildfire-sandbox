@@ -8,7 +8,7 @@ import { SpottingSystem } from '../src/sim/spottingSystem';
 import { UniformWeatherProvider } from '../src/sim/uniformWeather';
 import { Fuel } from '../src/sim/basicFuelModel';
 import { TerrainFuelModel } from '../src/sim/terrainFuelModel';
-import { segmentCross, type Crossing, type Ring } from '../src/sim/perimeter';
+import { segmentCross, selfIntersects, type Crossing, type Ring } from '../src/sim/perimeter';
 import { surfaceSpread, ftPerMinToMetersPerSec, metersPerSecToFtPerMin } from '../src/sim/rothermel';
 import { byteToFraction, fractionToByte } from '../src/core/moisture';
 import { loadScenario } from '../src/scenario/scenario';
@@ -542,17 +542,21 @@ describe('Huygens marker front — the spotting preset runs a simulated hour (St
     expect(nan).toBe(0);
     // Every burning cell carries a defined intensity — bar at most a handful of
     // embers `SpottingSystem` lit *this* very tick (it runs after the fire model,
-    // so their intensity is filled by the fallback on the next tick's step 1,
-    // exactly as in the raster model). The no-cell-swallowed-at-zero invariant
-    // itself (§5c) is pinned deterministically by the two-front weld test, which
-    // has no spotting; here it would only ever be a same-tick ember.
+    // so their intensity is only filled on the next tick's step-1 fallback). This
+    // was verified, not assumed: at the end of the hour exactly one cell read zero,
+    // and one more `HuygensFireModel.step` cleared it — so it is a same-tick ember,
+    // not a permanently-wet cell the fallback keeps zeroing. The no-cell-swallowed
+    // -at-zero invariant (§5c) is pinned deterministically by the two-front weld
+    // test, which has no spotting.
     expect(zeroInt).toBeLessThanOrEqual(5);
     // Bounded, and non-vacuously so: the measured hour holds ~140 live fronts
     // (164 with retirement off), so this is comfortably above the real count and
     // still far below one-front-per-cell — retirement is provably doing work.
     expect(model.perimeters.length).toBeLessThan(400);
-    // …and every front is simple: crossover removal (§D7) held for the whole hour.
-    // Without it the detector finds hundreds of crossings on this very run.
+    // …and every front is simple at the end of the hour: crossover removal (§D7)
+    // left no residual tangle. (The every-tick guarantee is pinned on the island
+    // gate above; here the end-state check is the cheap catch-all on a full run,
+    // where without removal the detector finds hundreds of crossings.)
     expect(totalSelfX(model)).toBe(0);
   }, 60_000);
 });
@@ -757,14 +761,21 @@ describe('Huygens marker front — self-crossings are removed (Stage 3, §D7)', 
       const off = islandWorld();
       const mOn = new HuygensFireModel(new Anderson13FuelModel(), { decross: true });
       const mOff = new HuygensFireModel(new Anderson13FuelModel(), { decross: false });
-      const sOn: System[] = wind > 0 ? [new UniformWeatherProvider(wind, 0), mOn] : [mOn];
-      const sOff: System[] = wind > 0 ? [new UniformWeatherProvider(wind, 0), mOff] : [mOff];
-      new Simulation(on.world, sOn).run(150, 1);
-      new Simulation(off.world, sOff).run(150, 1);
+      const sOn = new Simulation(on.world, wind > 0 ? [new UniformWeatherProvider(wind, 0), mOn] : [mOn]);
+      const sOff = new Simulation(off.world, wind > 0 ? [new UniformWeatherProvider(wind, 0), mOff] : [mOff]);
+      // Check the decrossed model's simplicity EVERY tick (with the model's own
+      // predicate, so the test and the model agree on what a crossing is) — a loop
+      // can form and be gone between coarse samples. The un-removed model tangles
+      // to thousands of markers, so its O(n²) crossing *count* is only taken at the
+      // end, where it just needs to be positive (non-vacuity).
+      for (let t = 0; t < 150; t++) {
+        sOn.step(1);
+        sOff.step(1);
+        expect(mOn.perimeters.some((r) => selfIntersects(r))).toBe(false); // ON: simple every tick
+      }
 
       expect(on.world.layers.fire.get(on.ix1 + 2, on.cy)).not.toBe(FireState.Unburned); // lips met
-      expect(totalSelfX(mOff)).toBeGreaterThan(0); // the scenario really tangles…
-      expect(totalSelfX(mOn)).toBe(0); // …and removal leaves it simple
+      expect(totalSelfX(mOff)).toBeGreaterThan(0); // the scenario really tangles without removal…
       expect(totalMarkers(mOn)).toBeLessThanOrEqual(totalMarkers(mOff)); // markers bounded
       expect(Math.abs(burnedCount(on.world) - burnedCount(off.world))).toBeLessThanOrEqual(8); // area unchanged
     }
