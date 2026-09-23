@@ -858,13 +858,12 @@ describe('Huygens marker front — self-crossings are removed (Stage 3, §D7)', 
 /**
  * The {@link islandWorld} geometry with the island WET (above FM1 extinction)
  * instead of rock, burned past until the rim is out; then the island is dried and
- * one ember is dropped on a cell the front **claimed but never lit**, and the run
- * continues. Returns how many island cells are still unburned, plus the setup facts
- * that make that number mean something.
+ * one ember is dropped on its south-west corner cell — where the front's edges cut
+ * across the island, and where (before the fix) they claimed cells without
+ * lighting them — and the run continues.
  */
 function wetIslandEmber(engine: 'huygens' | 'raster'): {
   claimedUnlit: number;
-  emberCellClaimed: boolean;
   stillUnburned: number;
 } {
   const { world, ix1, cy } = islandWorld();
@@ -886,45 +885,29 @@ function wetIslandEmber(engine: 'huygens' | 'raster'): {
 
   const fire = world.layers.fire.data;
   const owner = engine === 'huygens' ? (model as unknown as { owner: Int32Array }).owner : null;
-  const claimed = island.filter((i) => fire[i] === FireState.Unburned && owner !== null && owner[i] >= 0);
-  // The raster has no ownership: its ember goes on the island's centre instead.
-  const ember = claimed[0] ?? cy * world.width + (ix1 - 4);
+  const claimedUnlit = island.filter((i) => fire[i] === FireState.Unburned && owner !== null && owner[i] >= 0).length;
+  const iy1 = cy + 5;
+  const ember = (iy1 - 1) * world.width + (ix1 - 8); // the island's south-west corner
 
   for (const i of island) moist[i] = MOIST; // the island dries…
   fire[ember] = FireState.Burning; // …and an ember lands in it
   sim.run(300, 1);
-  return {
-    claimedUnlit: claimed.length,
-    emberCellClaimed: claimed.includes(ember),
-    stillUnburned: island.filter((i) => fire[i] === FireState.Unburned).length,
-  };
+  return { claimedUnlit, stillUnburned: island.filter((i) => fire[i] === FireState.Unburned).length };
 }
 
-describe('Huygens marker front — a wet cell the front touched but did not light (known bug)', () => {
-  // The paint in `advance` sets `owner[i]` BEFORE it checks `carriesFire`, so a
-  // front edge that sweeps across a wet (or retardant-pinned) cell claims it without
-  // lighting it — here, the island's corners. Two things read that claim later:
-  // seeding (`owner[i] < 0` only), so an ember landing there once it dries lights
-  // one cell and grows no front; and the weld (`owner[j] !== f.id`), so any *other*
-  // front treats the cell as a wall (partially — another front's *edges* still
-  // paint it, so an ember at the island's centre leaves only 0–1 cells unburned).
-  // Found in review, confirmed here; not fixed yet. A fix that stops wet cells
-  // being claimed flips BOTH tests below — the setup's `claimedUnlit > 0` goes red
-  // with it — so rewrite the setup then; and hold the fix to the retirement fix's
-  // gate: byte-identical output on every preset's hour, or explain the diff.
+describe('Huygens marker front — a wet cell the front touches but cannot light is not claimed', () => {
+  // The paint in `advance` used to set `owner[i]` BEFORE checking `carriesFire`,
+  // so a front edge sweeping across a wet (or retardant-pinned) cell claimed it
+  // unlit — here, the island's corners. Seeding only happens on unowned cells, so
+  // once the island dried an ember landing on a claimed corner lit that one cell
+  // and grew no front: measured, 79 of the island's 80 cells stayed unburned where
+  // the raster burns all 80. (It also walled other fronts' markers out.)
 
-  it('setup: the front claims wet island cells without lighting them; the raster burns the dried island from an ember', () => {
+  it('no unburned island cell is owned, and an ember on the corner burns the dried island, as on the raster', () => {
     const h = wetIslandEmber('huygens');
-    expect(h.claimedUnlit).toBeGreaterThan(0); // non-vacuous: a claimed, unlit cell exists
-    expect(h.emberCellClaimed).toBe(true); // …and the ember lands on one
-    expect(wetIslandEmber('raster').stillUnburned).toBe(0); // the reference engine burns it all
-  }, 30_000);
-
-  it.fails('an ember on a claimed-but-unlit cell burns the dried island, as on the raster', () => {
-    // Measured before any fix: 79 of the island's 80 cells stay unburned — the
-    // ember cell lights, no front is seeded from it, and the island never burns.
-    // Remove `.fails` when this is fixed (and see the note above on the setup test).
-    expect(wetIslandEmber('huygens').stillUnburned).toBe(0);
+    expect(h.claimedUnlit).toBe(0);
+    expect(h.stillUnburned).toBe(0);
+    expect(wetIslandEmber('raster').stillUnburned).toBe(0); // the reference engine agrees
   }, 30_000);
 });
 

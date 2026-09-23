@@ -201,8 +201,9 @@ export class HuygensFireModel implements IFireModel {
   private nextFrontId = 0;
   /**
    * Per cell: which front (by {@link Front.id}) first accounted for this cell, or
-   * `-1` for none. Set when a ring paints a cell or is seeded at one, and never
-   * cleared — a burnt-over cell is still accounted for, so re-seeding it would
+   * `-1` for none. Set when a ring lights a cell, paints over one already alight,
+   * or is seeded at one — never on a cell the paint crosses but cannot light — and
+   * never cleared — a burnt-over cell is still accounted for, so re-seeding it would
    * restart a fire on ash, and the *first* owner is the front whose intensity the
    * cell keeps.
    *
@@ -420,8 +421,8 @@ export class HuygensFireModel implements IFireModel {
    * The test reads **fire state and fuel, not ownership and not moisture** on
    * purpose. A wet or retardant-pinned cell is unburned burnable fuel, so a front
    * held at a wet band keeps its frontier and crosses once the band dries (the
-   * drydown gate); and ownership is claimed on cells the paint touches but does
-   * not light, so "no unowned neighbour" would retire exactly that front.
+   * drydown gate); and ownership only marks ground that is alight or was, so it
+   * says nothing about what is left to burn.
    */
   private hasFrontier(f: Front, width: number, height: number, fire: Uint8Array, fuelL: Uint8Array): boolean {
     const { xs, ys } = f;
@@ -617,17 +618,26 @@ export class HuygensFireModel implements IFireModel {
         const paint = (px: number, py: number): void => {
           if (px < 0 || py < 0 || px >= width || py >= height) return;
           const i = py * width + px;
-          // First front to touch a cell owns it (and, below, sets its intensity):
-          // ownership is what lets a later front's markers recognise this ground
-          // as already burning and weld to it rather than burn through (§D6).
-          if (owner[i] < 0) owner[i] = f.id;
-          if (fire[i] !== FireState.Unburned) return;
+          if (fire[i] !== FireState.Unburned) {
+            // First front to reach burning ground owns it: ownership is what lets
+            // a later front's markers recognise this ground as already burning and
+            // weld to it rather than burn through (§D6).
+            if (owner[i] < 0) owner[i] = f.id;
+            return;
+          }
           // Never ignite a cell that cannot carry fire — nonburnable, or wet /
           // retardant-pinned above extinction. An edge segment between two dry
           // markers can still cross such a cell, so the paint gate has to be the
           // full `carriesFire`, not just `burnableFuel` (matching the raster
           // model's per-candidate `rate <= 0` skip).
+          //
+          // **And such a cell is not claimed either.** Claiming it here, before
+          // this gate, was a bug (`tests/huygens.test.ts`, "a wet cell the front
+          // touched but did not light"): once the cell dried, seeding refused it
+          // (it was owned) and every other front's markers read it as a wall, so
+          // an ember landing on it lit one cell and grew nothing.
           if (!behaviour.carriesFire(fuelL[i], moist[i])) return;
+          if (owner[i] < 0) owner[i] = f.id;
           fire[i] = FireState.Burning;
           burnElapsed[i] = 0;
           if (fli[k] > 0) {
