@@ -757,9 +757,12 @@ a cell per second creeps for many minutes before it is. The fix (commit `cc75bb8
 also retires a front once no marker has an unburned burnable cell within **two**
 cells. One cell was not enough, measured: three fronts on a 64² hour looked dead
 and later crossed a cell of their own burnt ground to light 27 more. At two cells
-the `fire`/`intensity`/`crown` layers are **byte-identical** to the model without
-the test (64² and two 256² hours; `tests/huygens.test.ts` "retirement never
-changes what burns", which fails at a one-cell reach). Burned area at 512² is the
+the `fire`/`intensity`/`crown` layers are **byte-identical** to running with no
+retirement at all — checked over a full hour on **all six presets** at their own
+size and on `timber-crown-run` at 512², with the profiler's suppression orders
+(harness `W:\temp\claude\phase11-review\sweep.ts`); `tests/huygens.test.ts`
+"retirement never changes what burns" pins the 64² case and fails at a one-cell
+reach. Burned area at 512² is the
 same 34 329 cells either way.
 
 **Where the time goes now** (CPU profile of the 512² hour): the per-marker
@@ -787,6 +790,20 @@ triggers the §8 revalidation), Huygens carries the §D8 hole caveat, and its fi
 model still costs about 4× the raster's at 256² and 8× at 512². Whether that price is worth the smoother front is a
 scope decision, left to the user (§5d). Flipping remains a one-line change plus the
 §8 recomputation.
+
+**Open after the review, not done:**
+
+- **Bucket the crossover search** by cell — about a quarter of `fire:huygens` now,
+  and the saving most likely to bring the 512² terrain view inside 60 fps.
+- **Ownership is claimed too early.** `advance`'s paint sets `owner` on a cell
+  *before* checking that it will ignite, so a front claims wet and nonburnable
+  cells it merely touches. The suspected consequence is untested: a wet patch a
+  front wraps and then drops as an inner loop (§D7) stays owned by that front, so
+  once it dries no other front can enter it and an ember landing there seeds no
+  new front. It predates the retirement fix and does not change any output
+  measured here. Reproduce it with a test first; if it reproduces, claim a cell
+  only when it ignites or is already alight.
+- The default flip (above) is the user's call.
 
 (Burned area differs between engines — e.g. 34 329 vs the raster's ~14 k at one
 hour, 512² — because the smooth front burns more, §9, and the two throw embers on

@@ -282,7 +282,8 @@ front buried in its own burnt ground kept creeping and was never retired, so at
 512² four fifths of ~6 000 live fronts had nothing left to burn. A front is now
 also retired once no marker has an unburned burnable cell within **two** cells —
 measured, not derived (one cell lost 27 cells on a 64² hour), and output
-**byte-identical** to no retirement at all (pinned in `tests/huygens.test.ts`).
+**byte-identical** to no retirement at all on every preset's hour and at 512²
+(pinned in `tests/huygens.test.ts`).
 Full spotting hour, `fire:huygens`: 512² 41.97 → **9.48 ms/step**, the preset's
 own 256² 34 → **6.93** (raster 1.16 / 1.72) — near, not inside, the 60 fps budget
 on the 512² terrain view. The O(n²) crossover search is now about a quarter of

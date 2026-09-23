@@ -411,8 +411,9 @@ export class HuygensFireModel implements IFireModel {
    * ahead of it), so the reach is **measured, not derived**: with a one-cell reach
    * three fronts on a 64² `timber-crown-run` hour looked dead and later reached an
    * unburned cell two cells off, and retiring them cost 27 burned cells; with two
-   * cells the `fire`/`intensity`/`crown` layers are byte-identical to never
-   * applying this test, on that run and on two 256² hours. `tests/huygens.test.ts`
+   * cells the `fire`/`intensity`/`crown` layers are byte-identical to running with
+   * no retirement at all — checked for a full hour on **every preset** at its own
+   * size, plus `timber-crown-run` at 512². `tests/huygens.test.ts`
    * ("retirement never changes what burns") pins the 64² case against running
    * with no retirement at all, and fails at a one-cell reach.
    *

@@ -833,12 +833,23 @@ describe('Huygens marker front — self-crossings are removed (Stage 3, §D7)', 
   it('a wind-driven fold does not blow up the marker count', () => {
     // The runaway this stage exists to stop, stated as a hard bound: with removal
     // the windy island holds ~1 000 markers; without it, ~12 000 and climbing.
+    // Measured over the run, not at its end: this fire burns the whole map, and
+    // once nothing is left every front is (correctly) retired, so an end-of-run
+    // count would be of an empty model.
     const { world, ix1, cy } = islandWorld();
     const model = new HuygensFireModel(new Anderson13FuelModel(), { decross: true });
-    new Simulation(world, [new UniformWeatherProvider(3, 0), model]).run(150, 1);
+    const sim = new Simulation(world, [new UniformWeatherProvider(3, 0), model]);
+    let peak = 0;
+    let everCrossed = false;
+    for (let t = 0; t < 150; t++) {
+      sim.step(1);
+      peak = Math.max(peak, totalMarkers(model));
+      everCrossed ||= model.perimeters.some((r) => selfIntersects(r));
+    }
     expect(world.layers.fire.get(ix1 + 2, cy)).not.toBe(FireState.Unburned);
-    expect(totalMarkers(model)).toBeLessThan(3000);
-    expect(totalSelfX(model)).toBe(0);
+    expect(peak).toBeGreaterThan(100); // non-vacuous: there was a front to bound
+    expect(peak).toBeLessThan(3000);
+    expect(everCrossed).toBe(false);
   }, 30_000);
 });
 
