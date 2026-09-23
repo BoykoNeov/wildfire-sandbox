@@ -2,11 +2,13 @@ import { describe, it, expect } from 'vitest';
 import {
   MIN_RING_VERTICES,
   area,
+  decrossRing,
   densityControl,
   perimeterLength,
   pointInRing,
   seedRing,
   segmentCross,
+  selfIntersects,
   signedArea2,
   traverseSegment,
   type Crossing,
@@ -148,5 +150,55 @@ describe('perimeter — point in ring and segment crossing', () => {
     expect(segmentCross(0, 0, 4, 4, 0, 1, 4, 5, out)).toBe(false); // parallel
     expect(segmentCross(0, 0, 1, 1, 3, 3, 4, 4, out)).toBe(false); // collinear, disjoint
     expect(segmentCross(0, 0, 1, 0, 0.5, 1, 0.5, 2, out)).toBe(false); // misses
+  });
+});
+
+describe('perimeter — crossover removal (decrossRing, Stage 3)', () => {
+  it('a healthy seeded ring is wound so signedArea2 < 0 (the CCW-on-screen convention)', () => {
+    // The convention decrossRing's callers filter on: the front carries on in the
+    // loop wound this way, the reversed ear is the one to drop. Pin it here so a
+    // sign flip is caught in the pure layer, not chased through a hung sim.
+    expect(signedArea2(seedRing(5, 5, 3, 24))).toBeLessThan(0);
+  });
+
+  it('a simple ring does not self-intersect and comes back untouched', () => {
+    const ring = seedRing(10, 10, 5, 20);
+    expect(selfIntersects(ring)).toBe(false);
+    const out = decrossRing(ring);
+    expect(out.length).toBe(1);
+    expect(out[0]).toBe(ring); // same object, no copy on the common path
+  });
+
+  it('a bow-tie splits into simple loops', () => {
+    const bow: Ring = { xs: [0, 2, 2, 0], ys: [0, 2, 0, 2] };
+    expect(selfIntersects(bow)).toBe(true);
+    const loops = decrossRing(bow);
+    expect(loops.length).toBeGreaterThanOrEqual(2);
+    for (const lp of loops) expect(selfIntersects(lp)).toBe(false);
+  });
+
+  it('a folded-over ear splits into a large correct-winding loop and a small reversed one', () => {
+    // A CCW-on-screen square (signedArea2 < 0) with one edge poked back across the
+    // interior, the shape a front makes when a lip folds. Decrossing must yield one
+    // big loop still wound < 0 (the front carrying on) and a small loop wound > 0
+    // (the ear) — which is exactly what the model keeps vs drops.
+    const ring: Ring = {
+      // A square wound CCW-on-screen (signedArea2 < 0) with a spike (5,-4) poking
+      // south across the bottom edge — the shape a folded lip makes.
+      xs: [0, 5, 10, 10, 0],
+      ys: [10, -4, 10, 0, 0],
+    };
+    expect(signedArea2(ring)).toBeLessThan(0);
+    expect(selfIntersects(ring)).toBe(true);
+    const loops = decrossRing(ring);
+    for (const lp of loops) expect(selfIntersects(lp)).toBe(false);
+    const big = loops.filter((l) => signedArea2(l) < 0 && area(l) >= 1);
+    const ears = loops.filter((l) => signedArea2(l) > 0);
+    expect(big.length).toBeGreaterThanOrEqual(1);
+    expect(ears.length).toBeGreaterThanOrEqual(1);
+    // The kept (correct-winding) area dominates the dropped ear.
+    const keptArea = big.reduce((s, l) => s + area(l), 0);
+    const earArea = ears.reduce((s, l) => s + area(l), 0);
+    expect(keptArea).toBeGreaterThan(earArea);
   });
 });

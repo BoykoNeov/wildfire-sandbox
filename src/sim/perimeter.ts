@@ -191,6 +191,106 @@ export function segmentCross(
 }
 
 /**
+ * The first self-intersection of a ring: two non-adjacent edges `(i, i+1)` and
+ * `(j, j+1)` that cross, and the crossing point. Adjacent edges (which share a
+ * vertex, including the wrap pair edge `n-1`/edge `0`) are skipped — they touch
+ * at that vertex, which is not a crossing. Returns `null` for a simple ring.
+ *
+ * O(n²). It is the hot part of {@link decrossRing}, and the reason the model runs
+ * decrossing at most once per tick rather than per substep; if a profile at scale
+ * shows it dominating, the pair search buckets by cell (each edge only meets edges
+ * sharing a cell). Kept naive until that profile says otherwise.
+ */
+function firstCrossing(ring: Ring): { i: number; j: number; x: number; y: number } | null {
+  const { xs, ys } = ring;
+  const n = xs.length;
+  if (n < 4) return null;
+  const out: Crossing = { x: 0, y: 0 };
+  for (let i = 0; i < n; i++) {
+    const i2 = (i + 1) % n;
+    for (let j = i + 2; j < n; j++) {
+      const j2 = (j + 1) % n;
+      if (i === j2) continue; // edges share the wrap vertex v0 (edge 0 vs edge n-1)
+      if (segmentCross(xs[i], ys[i], xs[i2], ys[i2], xs[j], ys[j], xs[j2], ys[j2], out)) {
+        return { i, j, x: out.x, y: out.y };
+      }
+    }
+  }
+  return null;
+}
+
+/** True if the ring crosses itself. Cheap wrapper over {@link firstCrossing}. */
+export function selfIntersects(ring: Ring): boolean {
+  return firstCrossing(ring) !== null;
+}
+
+/**
+ * Split a self-crossing ring into **simple** (non-self-crossing) sub-rings — Stage
+ * 3's crossover removal (`docs/plans/phase-11-smooth-wavefront.md` §D7), the
+ * sandbox-sized answer to FARSITE's `newclip.cpp` rather than a port of it.
+ *
+ * At the first crossing of edges `(i, i+1)` and `(j, j+1)` at `P`, the ring
+ * divides into two loops that each keep `P`: the **inner** loop `P, v[i+1..j]` and
+ * the **outer** loop `P, v[j+1..i]`. Each is pushed back and re-split until none
+ * crosses, so a ring with several tangles comes apart completely. A simple ring is
+ * returned as-is (same object, no copy), which is the common per-tick case.
+ *
+ * **Winding is preserved, not fixed here.** Edge direction is untouched by the
+ * split, so a sub-loop keeps the orientation of the piece of the parent it came
+ * from: the continuation of the front stays wound the healthy way (CCW on screen,
+ * `signedArea2 < 0`), while a crossed-over *ear* comes out reversed. The caller
+ * uses that sign to tell the front's continuation from the fold to discard
+ * (`huygensFireModel`), which is why this stays pure geometry and takes no policy.
+ *
+ * `maxLoops` bounds the output against a pathological input; on hitting it the
+ * remaining unprocessed rings are returned as-is rather than looping forever.
+ */
+export function decrossRing(ring: Ring, maxLoops = 256): Ring[] {
+  const result: Ring[] = [];
+  const stack: Ring[] = [ring];
+  let guard = 0;
+  while (stack.length > 0) {
+    if (++guard > maxLoops * 16 || result.length >= maxLoops) {
+      for (const r of stack) result.push(r);
+      break;
+    }
+    const r = stack.pop()!;
+    if (r.xs.length < 3) continue; // degenerate sliver — drop
+    const x = firstCrossing(r);
+    if (x === null) {
+      result.push(r);
+      continue;
+    }
+    const { xs, ys } = r;
+    const n = xs.length;
+    // Inner loop: P, then v[i+1] .. v[j].
+    const ax: number[] = [x.x];
+    const ay: number[] = [x.y];
+    for (let k = (x.i + 1) % n; ; k = (k + 1) % n) {
+      ax.push(xs[k]);
+      ay.push(ys[k]);
+      if (k === x.j) break;
+    }
+    // Outer loop: P, then v[j+1] .. v[i].
+    const bx: number[] = [x.x];
+    const by: number[] = [x.y];
+    for (let k = (x.j + 1) % n; ; k = (k + 1) % n) {
+      bx.push(xs[k]);
+      by.push(ys[k]);
+      if (k === x.i) break;
+    }
+    stack.push({ xs: ax, ys: ay }, { xs: bx, ys: by });
+  }
+  return result;
+}
+
+/** Reverse a ring's winding in place (swap the direction the vertices run). */
+export function reverseRing(ring: Ring): void {
+  ring.xs.reverse();
+  ring.ys.reverse();
+}
+
+/**
  * Visit every cell the segment `(x0, y0) → (x1, y1)` passes through, in order,
  * including both endpoints' cells — an Amanatides–Woo voxel traversal in cell
  * units.

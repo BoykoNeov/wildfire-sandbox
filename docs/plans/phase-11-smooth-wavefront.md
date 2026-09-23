@@ -1,15 +1,18 @@
 # Phase 11 — the smooth wavefront (Huygens marker points)
 
-> **Status: Stages 0, 1 and 2 SHIPPED.** `spreadEngine: 'huygens'` runs a marker
-> front end to end — Richards' equations, substepping, density control, barriers,
-> seeding, rasterisation (Stages 0–1), and **merging + ring retirement**
-> (Stage 2) — and §7's table is measured below. `'raster'` remains the default, so
-> nothing in [`docs/science.md`](../science.md) has moved. **Stage 3** (crossover
-> removal for a single self-intersecting front, then the call on the default) is
-> still to do; §D8's burnable enclaves stay out of scope for the phase.
+> **Status: Stages 0–3 SHIPPED.** `spreadEngine: 'huygens'` runs a marker front
+> end to end — Richards' equations, substepping, density control, barriers,
+> seeding, rasterisation (Stages 0–1), **merging + ring retirement** (Stage 2), and
+> **crossover removal** (Stage 3) — and §7's table is measured below. `'raster'`
+> remains the default, so nothing in [`docs/science.md`](../science.md) has moved.
+> The remaining Stage 3 item is **the argued call on whether the default flips**,
+> with the 512² profile below as its input; §D8's burnable enclaves stay out of
+> scope for the phase.
 >
-> **Stage 2's merge is grid-assisted, not a transcription of FARSITE's
-> `MergeFireRings` — a deliberate reversal of §D6, recorded in §D6 below.**
+> **Two mechanisms are grid-assisted rather than transcriptions of FARSITE, both
+> deliberate reversals recorded below:** the Stage 2 merge (§D6, not
+> `MergeFireRings`) and the Stage 3 crossover removal (§D7, not `newclip.cpp` — it
+> splits a self-crossing ring and keeps the single largest, correctly-wound loop).
 
 **Goal:** stop carrying the fire as a raster of finitely many rays. Carry it as a
 **polygon of marker points** that each advance by Richards' (1990) elliptical
@@ -379,15 +382,52 @@ as it grows:
 | **Merging** — two perimeters into one | `PostFrontal::MergeFireRings` (`fsxpfront.cpp:2774`) | D6 |
 | **Enclaves** — unburned islands inside the burn | `RemoveRingEnclaves`, `FillOuterRing` | See D8 |
 
+### D7 (shipped) — crossover removal is split-and-keep-largest, not a `newclip.cpp` port
+
+**Reversal of the D7 table's "port FARSITE's crossover machinery", on the same
+grounds as §D6.** The probe that motivated this is worth keeping: a marker front
+*does* self-cross — a windless circle wrapping a nonburnable island reaches ~36
+crossings once its two lips meet behind the island, and a **wind-driven** fold is
+violent, 15 000+ crossings and the marker count running away (measured 9.3 M
+before the fix). So removal is not optional (the earlier guess that it might be
+came from a broken probe whose island sat off the fire's path — the lips never
+met, so it found nothing).
+
+What ships is a pure `decrossRing` (`src/sim/perimeter.ts`) that splits a ring at
+its first self-intersection into two loops that each keep the crossing point, and
+recurses until every loop is simple — then the model
+(`HuygensFireModel.decrossFronts`) **keeps only the single largest loop, the outer
+boundary, and discards the rest.** Keeping *all* correctly-wound loops was tried
+first and blew up: a folded front splits into many loops that share the parent id,
+so they do not weld against each other (§D6), overlap, re-cross and re-split — the
+9.3 M-marker run. Keeping exactly one loop per crossing front bounds the marker
+count by the perimeter. The kept loop inherits the parent id (so its markers, on
+parent-owned cells, are not retired as another front's ground) and is flipped to
+the healthy CCW-on-screen winding if the split left it reversed. Dropping the
+other loops un-burns nothing — their cells are already painted — so **burned area
+is preserved to within a cell** (windy island: 6 480 vs 6 481 with removal off),
+and because the bounded marker count makes every other per-tick cost cheaper,
+removal is *faster* overall (windy island 1.08 s vs 6.2 s off).
+
+The self-intersection search is O(n²) per front per tick; it is cheap where fronts
+are many and small (the presets) and only bites on a single very large ring. It is
+left naive until the 512² profile (§7b) says otherwise; the profile is below.
+
 ### D8 — Burnable enclaves are declared out of scope for this phase
 
 A *nonburnable* island is handled for free by D4's guard 2. A **burnable**
 island — a bay that closes and leaves live fuel ringed by fire — needs inner
 rings, which in FARSITE is a second class of perimeter with reversed
-orientation. Out of scope for Phase 11; the stated artifact is that such a pocket
-is treated as burned once the outer ring closes over it. This goes into
-`docs/science.md` §9 as a *new* named gap, replacing the bullet this phase
-closes. It is not swept under the rug.
+orientation. Out of scope for Phase 11.
+
+**How the shipped D7 realises this (a change from the original wording).** The
+plan said such a pocket would be "treated as burned once the outer ring closes."
+The keep-largest crossover removal does the opposite and it is cleaner: when the
+front closes around a pocket, the pocket's boundary comes out as one of the
+*discarded* inner loops, so the pocket is **left unburned — an interior hole** —
+rather than filled. Its cells were never painted, so nothing is falsified; a real
+fire does leave unburned islands. This goes into `docs/science.md` §9 as the *new*
+named gap replacing the smooth-wavefront bullet, whenever the default flips.
 
 ### D9 — Determinism gets ordering rules and its own test
 
@@ -553,18 +593,27 @@ with run length as enclosed rings accumulate, **not** the difference between
 bounded and runaway. The `retire: false` option that produced the baseline stays
 as a measurement hatch.
 
-**Stage 3 — crossover/loop removal (D7), and the decision on the default.**
-*Gate:* a front driven around a nonburnable island produces a valid simple
-polygon; the new determinism test is green; `npm run profile` inside the frame
-budget at 512²; then the argued call on whether `'huygens'` becomes the default.
+**Stage 3 — crossover/loop removal (D7).** ✅ Split-and-keep-largest, the
+mechanism and its reversal of the D7 table are in **§D7 (shipped)** above.
+*Gate met:* `decrossRing` unit tests in `tests/perimeter.test.ts` (a bow-tie and a
+folded ear split into simple loops, the CCW-on-screen winding convention pinned);
+and in `tests/huygens.test.ts`, a front wrapping a nonburnable island is simple
+every run where the un-removed run tangles (windless and windy), a wind-driven
+fold holds under 3 000 markers instead of running away, burned area matches a
+`decross: false` run to within a cell, and the `timber-crown-run` hour now also
+asserts **zero self-crossings** across the whole run. Determinism (spotting on)
+still byte-identical. Full suite 454. **The profile at 512² is §7b below and it
+fits the frame budget**, so the naive O(n²) crossing search is left as-is.
 
-**Carry forward from Stage 2:** grid-welding leaves two merged fronts as two
-polygons whose markers sit permanently stalled against each other along the
-contact — the fronts *overlap* in space without either being a self-crossing
-single perimeter. Stage 3's loop-removal must not mistake such a welded pair for
-a front that has folded onto itself; the distinction is that a self-crossing is
-one ring's edge cutting another edge of *the same* ring. Include a welded pair in
-the crossover test as a negative case.
+**Carry forward that held:** grid-welding leaves two merged fronts as two
+overlapping polygons, *not* one self-crossing perimeter, and crossover removal
+runs per front on its *own* edges — so a welded pair is never mistaken for a fold.
+(No pair-of-fronts crossing test was needed in the end, because `decrossRing` only
+ever sees a single ring; the merge seam lives between two different `Front`
+objects.)
+
+**The remaining Stage 3 item — the default flip — is argued in §5d + §7b and left
+to the user.** The recommendation there is to keep `'raster'` the default.
 
 ---
 
@@ -644,6 +693,45 @@ wind 30° off-axis the head lands at **31.0°** — against the raster's 27.9°,
 against the −30° a mirrored ellipse would have produced with every other number
 in this document unchanged.
 
+### 7b. As measured (Stage 3) — the 512² profile and the default call
+
+`npm run profile -- timber-crown-run 1200 --size=512 --engine=<engine>` (the
+`--engine` flag is new this stage, so the marker front can be profiled without a
+temporary preset edit), on the same idle machine as the Stage-1 numbers. Per
+`step`, ms:
+
+| system | huygens | raster |
+|---|---|---|
+| `fire:*` | **5.41** | 1.13 |
+| `fire:spotting` | 0.62 | 0.49 |
+| everything else | 0.92 | 0.77 |
+| **sim TOTAL** | **6.95** | 2.38 |
+
+At `timeScale 60` that is 1.0 step/frame, so the sim owes its whole `step` to the
+16.67 ms frame. Huygens leaves **9.7 ms** to render; the heaviest view (terrain
+with smoke, 5.8 ms) fits inside it — **the marker front is within the 512² frame
+budget**, with ~4 ms to spare, crossover removal and all. The naive O(n²)
+self-intersection search (§D7) is therefore left as-is; it does not dominate,
+because the presets carry many small fronts rather than one giant ring, and the
+one giant-ring case that would stress it is not what the budget is spent on.
+
+Huygens is **~4.8× the fire model and ~2.9× the whole sim** of the raster. It
+still fits; it just spends the headroom the raster leaves. (Burned area differs
+between the two columns — 4 753 vs 2 414 cells at 1 200 steps — because the smooth
+front burns more, §9, and the two throw embers on different schedules; this is the
+expected direction, not a regression.)
+
+**The default call: keep `'raster'`.** Recommended, and left to the user because
+it is a scope decision, not a correctness one (§5d). The reasons: every measured
+number in [`docs/science.md`](../science.md) is on the raster path, so flipping
+triggers the whole §8 revalidation for a sandbox that already teaches true things
+on the cheaper model; the marker front, though within budget at 512², spends ~3×
+the sim and less of it survives to `?size=1024`; and it still carries scope gaps
+the raster does not (burnable pockets left as holes, §D8). The value Phase 11
+delivers is that the smooth front is *available* behind `spreadEngine: 'huygens'`
+for when faithfulness of shape matters — not that it must be the default. Flipping
+remains a one-line change plus the §8 recomputation whenever that trade is wanted.
+
 ---
 
 ## 8. What goes stale — a deliverable, not a footnote
@@ -690,6 +778,8 @@ path, and D8's burnable-enclave gap opens in its place.
    retirement. Suppression, spotting, two-front weld, retirement and a
    `timber-crown-run` hour pinned on the Huygens path. (Barrier guard and
    external-ignition seeding landed in Stage 1.)
-8. Stage 3: crossover removal for a single self-intersecting front, determinism
-   test, profile at 512², then the default call.
+8. Stage 3 ✅: crossover removal (`decrossRing` + `decrossFronts`, split-and-keep-
+   largest), the `--engine` profile flag, the 512² profile (§7b, within budget),
+   and the argued default call (keep `'raster'`, §7b). Determinism pinned with
+   spotting on.
 9. `docs/science.md` §1c + §9 retarget; update this doc's status; memory note.

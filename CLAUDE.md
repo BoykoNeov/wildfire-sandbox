@@ -237,7 +237,7 @@ burned area and 2.47× the mean fireline intensity at one hour, against the old
 pair's 2.25× / 1.60×. Other presets and the default terrain mapping (FM1/FM6/FM9)
 are unmoved on purpose — every measured number in `docs/science.md` was taken
 against them.
-**P11 the smooth wavefront, Stages 0–1** ✅
+**P11 the smooth wavefront, Stages 0–3** ✅
 (`docs/plans/phase-11-smooth-wavefront.md`): the fire can now be carried as a
 **polygon of marker points** that each move by Richards' (1990) elliptical growth
 equations — FARSITE's mechanism, transcribed from the FARSITE 4 C++ because
@@ -262,14 +262,26 @@ of the `fire` layer the same run measures 1.050 — because at a 30-cell radius 
 30 m cells, one cell is 3 %. The phase would have looked like it missed its own
 headline prediction without that distinction.
 
-Still to do: **merging** two perimeters that have grown together (Stage 2 — and
-until it lands the marker front is not usable on any preset with spotting, which
-throws multiple concurrent perimeters from the first ember), **crossover/loop
-removal** (Stage 3), then the argued call on whether the default flips. Burnable
-enclaves are declared out of scope for the phase.
+**Stages 2 and 3 are now done too** (`docs/plans/phase-11-smooth-wavefront.md`),
+both **grid-assisted reversals of the plan's "port FARSITE" decisions**, argued in
+that doc. **Stage 2 — merging + retirement:** each cell records the first front's
+`owner`; a marker stepping onto another front's ground is blocked, so touching
+fronts *weld* and a fully-enveloped ring is *retired* (the raster the rings paint
+was always their exact union, so no polygon boolean is needed). **Stage 3 —
+crossover removal:** a marker front really does self-cross (a wind-driven fold
+reached 9.3 M markers before the fix), so `decrossRing` splits a self-crossing
+ring and the model keeps only the single largest, correctly-wound loop — burned
+area preserved to within a cell, and *faster* overall because markers stay
+bounded. Two moisture bugs the advisor caught were fixed alongside (a wet/retardant
+band is now a barrier the marker front respects; a globally-wet tick no longer
+retires every fire). At 512² the marker front profiles at 6.95 ms/step sim
+(raster 2.38) — **within the frame budget** — so **`'raster'` stays the default**
+(recommended; the flip is left to the user, §7b) and no `docs/science.md` number
+has moved. Burnable enclaves remain out of scope (§D8): a pocket the front closes
+around is left as an unburned hole.
 
-Next: Phase 11 Stages 2 and 3 — then the additive future phases (WUI structures →
-industrial). Each phase must be runnable and verifiable before the next.
+Next: the additive future phases (WUI structures → industrial). Each phase must be
+runnable and verifiable before the next.
 
 One scope note carried by `?size=`: the terrain generator samples in normalized
 coordinates, so a bigger map is the same landscape spread over more ground —

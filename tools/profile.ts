@@ -5,9 +5,11 @@
  * leaves. The numbers are what the browser frame loop pays, minus `putImageData`
  * and the DOM.
  *
- * Run: npm run profile [-- <preset-id> [steps] [--size=N]]  (default: shifting-winds, 1500)
+ * Run: npm run profile [-- <preset-id> [steps] [--size=N] [--engine=raster|huygens]]
+ *      (default: shifting-winds, 1500, the preset's own engine)
  *      npm run profile -- timber-crown-run 3000
  *      npm run profile -- timber-crown-run 1800 --size=512   (square map, centre ignition)
+ *      npm run profile -- timber-crown-run 1800 --size=512 --engine=huygens   (marker front)
  *
  * The npm script bundles this file with esbuild and runs it under plain `node`
  * ON PURPOSE: `vite-node` (what `npm run frame` uses) rewrites every imported
@@ -30,6 +32,13 @@ const argv = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 /** `--size 512`: run the preset on a square map of that side, ignition at centre. */
 const sizeArg = process.argv.find((a) => a.startsWith('--size'));
 const SIZE = sizeArg ? Number(sizeArg.split('=')[1] ?? process.argv[process.argv.indexOf(sizeArg) + 1]) : 0;
+/** `--engine=huygens`: profile the marker front instead of the preset's default (raster). */
+const engineArg = process.argv.find((a) => a.startsWith('--engine'));
+const ENGINE = engineArg ? engineArg.split('=')[1] ?? process.argv[process.argv.indexOf(engineArg) + 1] : undefined;
+if (ENGINE !== undefined && ENGINE !== 'raster' && ENGINE !== 'huygens') {
+  console.error(`--engine must be 'raster' or 'huygens', got "${ENGINE}"`);
+  process.exit(1);
+}
 
 const presetId = argv[0] ?? DEFAULT_PRESET_ID;
 const preset = findPreset(presetId);
@@ -39,7 +48,11 @@ if (!preset) {
 }
 const STEPS = Number(argv[1] ?? 1500);
 
-const scenario = SIZE > 0 ? { ...preset, width: SIZE, height: SIZE, ignitions: 'center' as const } : preset;
+const scenario = {
+  ...preset,
+  ...(SIZE > 0 ? { width: SIZE, height: SIZE, ignitions: 'center' as const } : {}),
+  ...(ENGINE ? { spreadEngine: ENGINE as 'raster' | 'huygens' } : {}),
+};
 const { world, sim, systems, crew, engine, aircraft, burnableCells } = loadScenario(scenario);
 const cx = world.width >> 1;
 const cy = world.height >> 1;

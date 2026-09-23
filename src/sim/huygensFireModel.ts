@@ -7,6 +7,12 @@ import {
   densityControl,
   seedRing,
   traverseSegment,
+  decrossRing,
+  selfIntersects,
+  reverseRing,
+  signedArea2,
+  area,
+  MIN_RING_VERTICES,
   type Ring,
 } from './perimeter';
 import { SurfaceBehaviour, type SurfaceBehaviourOptions } from './surfaceBehaviour';
@@ -153,6 +159,16 @@ export interface HuygensFireModelOptions extends SurfaceBehaviourOptions {
    * mounted configuration.
    */
   retire?: boolean;
+  /**
+   * Remove self-crossings from a front once per tick (§D7, Stage 3). Default true.
+   * A front that wraps a nonburnable island, or that a wind pushes into a fold,
+   * grows two lips that meet and cross; left alone the reversed loop feeds an
+   * unbounded marker blow-up (measured: 18 617 markers and 31 778 crossings on a
+   * windy island run, against ~1 300 clean). `false` disables removal — for
+   * measuring exactly that, and for pinning that burned area is unchanged by it;
+   * never a mounted configuration.
+   */
+  decross?: boolean;
 }
 
 /** Hard ceiling on substeps per tick — a fire model that hangs is worse than one that lags. */
@@ -167,6 +183,7 @@ export class HuygensFireModel implements IFireModel {
   private readonly seedRadius: number;
   private readonly seedVertices: number;
   private readonly retire: boolean;
+  private readonly decross: boolean;
 
   /** Perimeters, in creation order (§D9). */
   private fronts: Front[] = [];
@@ -205,6 +222,7 @@ export class HuygensFireModel implements IFireModel {
     this.seedRadius = opts.seedRadius ?? 0.5;
     this.seedVertices = opts.seedVertices ?? 16;
     this.retire = opts.retire ?? true;
+    this.decross = opts.decross ?? true;
   }
 
   step(world: WorldState, dt: number): void {
@@ -283,6 +301,80 @@ export class HuygensFireModel implements IFireModel {
     if (this.retire && advanced && this.fronts.some((f) => !f.open)) {
       this.fronts = this.fronts.filter((f) => f.open);
     }
+
+    // ── 4. Remove self-crossings (§D7, Stage 3) ──────────────────────────────
+    if (this.decross && advanced) this.decrossFronts();
+  }
+
+  /**
+   * Split any self-crossing front into simple loops and keep the front's
+   * continuation, discarding the folded-over ear (§D7).
+   *
+   * A front that wraps a nonburnable island, or that a strong wind pushes into a
+   * fold, grows two lips that meet and cross. The crossing splits the ring into a
+   * loop wound the healthy way (CCW on screen, `signedArea2 < 0`) — the front
+   * carrying on outward — and a reversed *ear*, the piece that folded back. Left
+   * alone the reversed ear moves markers inward and multiplies them without bound.
+   *
+   * **Only the single largest loop is kept** — the outer boundary of the burn —
+   * and every other sub-loop is discarded. This is the one point that matters, and
+   * an earlier version that kept *all* correctly-wound loops as separate fronts
+   * blew up spectacularly: a strongly folded front splits into many loops, they
+   * share the parent id so they do not weld against each other (§D6), they overlap
+   * and re-cross, and each tick splits them again — a windy island run reached
+   * **9.3 million markers**. Keeping exactly one loop per crossing front makes the
+   * marker count bounded by the perimeter, which is the whole point.
+   *
+   * The kept loop **inherits the parent's id** so its markers, which sit on cells
+   * the parent painted, are not read as another front's ground and retired away
+   * (§D6). It is flipped to the healthy CCW-on-screen winding if the split left it
+   * reversed. Dropping the other loops **un-burns nothing** — their cells are
+   * already painted — so burned area is preserved (pinned in `tests/huygens.test.ts`
+   * against a `decross: false` run). Two consequences follow, both recorded in the
+   * plan: a **burnable pocket** the front closes around is dropped with the inner
+   * loops, so it is left as an unburned hole rather than "treated as burned"
+   * (narrowing §D8); and a front that genuinely pinched into two comparable lobes
+   * would keep only the larger, but a barrier-driven pinch splits into two fronts
+   * through the barrier, not through a self-crossing, so this case does not arise
+   * from the mounted scenarios (burned area confirms it stays within a few cells).
+   *
+   * Determinism (§D9): fronts are processed in creation order; each crossing front
+   * is replaced by exactly one, so order is preserved.
+   */
+  private decrossFronts(): void {
+    let anyCrossed = false;
+    for (const f of this.fronts) {
+      if (selfIntersects(f)) {
+        anyCrossed = true;
+        break;
+      }
+    }
+    if (!anyCrossed) return;
+
+    const next: Front[] = [];
+    for (const f of this.fronts) {
+      if (!selfIntersects(f)) {
+        next.push(f);
+        continue;
+      }
+      // Keep the single largest loop — the outer boundary — and drop the rest.
+      let best: Ring | null = null;
+      let bestArea = -1;
+      for (const lp of decrossRing(f)) {
+        if (lp.xs.length < MIN_RING_VERTICES) continue; // sliver
+        const a = area(lp);
+        if (a > bestArea) {
+          bestArea = a;
+          best = lp;
+        }
+      }
+      if (best) {
+        if (signedArea2(best) >= 0) reverseRing(best); // normalise to CCW-on-screen
+        next.push(makeFront(best, f.id));
+      }
+      // else: the whole front collapsed to slivers — dropped; its cells stay burned.
+    }
+    this.fronts = next;
   }
 
   /**

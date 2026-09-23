@@ -8,6 +8,7 @@ import { SpottingSystem } from '../src/sim/spottingSystem';
 import { UniformWeatherProvider } from '../src/sim/uniformWeather';
 import { Fuel } from '../src/sim/basicFuelModel';
 import { TerrainFuelModel } from '../src/sim/terrainFuelModel';
+import { segmentCross, type Crossing, type Ring } from '../src/sim/perimeter';
 import { surfaceSpread, ftPerMinToMetersPerSec, metersPerSecToFtPerMin } from '../src/sim/rothermel';
 import { byteToFraction, fractionToByte } from '../src/core/moisture';
 import { loadScenario } from '../src/scenario/scenario';
@@ -529,19 +530,30 @@ describe('Huygens marker front — the spotting preset runs a simulated hour (St
     l.sim.run(3600, 1); // one simulated hour at dt = 1 s
 
     let burned = 0;
+    let zeroInt = 0;
     let nan = 0;
     for (let i = 0; i < l.world.layers.fire.data.length; i++) {
       if (l.world.layers.fire.data[i] === FireState.Unburned) continue;
       burned++;
-      expect(l.world.layers.intensity.data[i]).toBeGreaterThan(0);
+      if (l.world.layers.intensity.data[i] <= 0) zeroInt++;
     }
     for (const r of model.perimeters) for (const v of r.xs) if (!Number.isFinite(v)) nan++;
     expect(burned).toBeGreaterThan(300);
     expect(nan).toBe(0);
+    // Every burning cell carries a defined intensity — bar at most a handful of
+    // embers `SpottingSystem` lit *this* very tick (it runs after the fire model,
+    // so their intensity is filled by the fallback on the next tick's step 1,
+    // exactly as in the raster model). The no-cell-swallowed-at-zero invariant
+    // itself (§5c) is pinned deterministically by the two-front weld test, which
+    // has no spotting; here it would only ever be a same-tick ember.
+    expect(zeroInt).toBeLessThanOrEqual(5);
     // Bounded, and non-vacuously so: the measured hour holds ~140 live fronts
     // (164 with retirement off), so this is comfortably above the real count and
     // still far below one-front-per-cell — retirement is provably doing work.
     expect(model.perimeters.length).toBeLessThan(400);
+    // …and every front is simple: crossover removal (§D7) held for the whole hour.
+    // Without it the detector finds hundreds of crossings on this very run.
+    expect(totalSelfX(model)).toBe(0);
   }, 60_000);
 });
 
@@ -677,6 +689,97 @@ describe('Huygens marker front — retirement fires on envelopment, and it is wh
     };
     expect(burned(on.world)).toBe(burned(off.world)); // identical output
   });
+});
+
+/** Count non-adjacent segment pairs of a ring that properly cross (self-intersections). */
+function selfIntersections(ring: Ring): number {
+  const { xs, ys } = ring;
+  const n = xs.length;
+  const out: Crossing = { x: 0, y: 0 };
+  let count = 0;
+  for (let i = 0; i < n; i++) {
+    const a = i, b = (i + 1) % n;
+    for (let j = i + 1; j < n; j++) {
+      const c = j, d = (j + 1) % n;
+      if (a === c || a === d || b === c || b === d) continue; // adjacent/shared vertex
+      if (segmentCross(xs[a], ys[a], xs[b], ys[b], xs[c], ys[c], xs[d], ys[d], out)) count++;
+    }
+  }
+  return count;
+}
+
+/** Total self-intersections across all of a model's fronts. */
+function totalSelfX(model: HuygensFireModel): number {
+  let n = 0;
+  for (const r of model.perimeters) n += selfIntersections(r);
+  return n;
+}
+function totalMarkers(model: HuygensFireModel): number {
+  let n = 0;
+  for (const r of model.perimeters) n += r.xs.length;
+  return n;
+}
+
+/** A field with a nonburnable island centred on the ignition row (wind, if any, via a provider). */
+function islandWorld(): { world: WorldState; ix1: number; cy: number } {
+  const size = 81;
+  const steps = 150;
+  const cellSize = (analyticHeadMps(0) * steps) / 26;
+  const world = createWorld({ width: size, height: size, seed: 1, cellSize });
+  world.layers.fuel.data.fill(FM);
+  world.layers.moisture.data.fill(MOIST);
+  const cy = size >> 1;
+  const igx = cy - 12;
+  const ix0 = cy - 4, ix1 = cy + 4, iy0 = cy - 5, iy1 = cy + 5;
+  for (let y = iy0; y < iy1; y++) for (let x = ix0; x < ix1; x++) world.layers.fuel.set(x, y, Fuel.Nonburnable);
+  world.layers.fire.set(igx, cy, FireState.Burning);
+  return { world, ix1, cy };
+}
+
+function burnedCount(w: WorldState): number {
+  let n = 0;
+  for (const v of w.layers.fire.data) if (v !== FireState.Unburned) n++;
+  return n;
+}
+
+describe('Huygens marker front — self-crossings are removed (Stage 3, §D7)', () => {
+  it('a front wrapping a nonburnable island stays simple, at the same burned area', () => {
+    // The case §D7 names. A circular front centred to wrap the island, its two
+    // lips meeting head-on behind it — the geometry that folds the perimeter onto
+    // itself. Under wind the fold is violent: without removal the ring reaches
+    // ~15 000 crossings and the marker count runs away (measured 9.3 M before this
+    // was fixed to keep only the outer loop). The gate: decross OFF really does
+    // tangle (non-vacuous), decross ON leaves every front simple, the marker count
+    // stays bounded, and the burned area is unchanged to within a few cells —
+    // because dropping the folded ear un-burns nothing.
+    for (const wind of [0, 3]) {
+      const on = islandWorld();
+      const off = islandWorld();
+      const mOn = new HuygensFireModel(new Anderson13FuelModel(), { decross: true });
+      const mOff = new HuygensFireModel(new Anderson13FuelModel(), { decross: false });
+      const sOn: System[] = wind > 0 ? [new UniformWeatherProvider(wind, 0), mOn] : [mOn];
+      const sOff: System[] = wind > 0 ? [new UniformWeatherProvider(wind, 0), mOff] : [mOff];
+      new Simulation(on.world, sOn).run(150, 1);
+      new Simulation(off.world, sOff).run(150, 1);
+
+      expect(on.world.layers.fire.get(on.ix1 + 2, on.cy)).not.toBe(FireState.Unburned); // lips met
+      expect(totalSelfX(mOff)).toBeGreaterThan(0); // the scenario really tangles…
+      expect(totalSelfX(mOn)).toBe(0); // …and removal leaves it simple
+      expect(totalMarkers(mOn)).toBeLessThanOrEqual(totalMarkers(mOff)); // markers bounded
+      expect(Math.abs(burnedCount(on.world) - burnedCount(off.world))).toBeLessThanOrEqual(8); // area unchanged
+    }
+  }, 30_000);
+
+  it('a wind-driven fold does not blow up the marker count', () => {
+    // The runaway this stage exists to stop, stated as a hard bound: with removal
+    // the windy island holds ~1 000 markers; without it, ~12 000 and climbing.
+    const { world, ix1, cy } = islandWorld();
+    const model = new HuygensFireModel(new Anderson13FuelModel(), { decross: true });
+    new Simulation(world, [new UniformWeatherProvider(3, 0), model]).run(150, 1);
+    expect(world.layers.fire.get(ix1 + 2, cy)).not.toBe(FireState.Unburned);
+    expect(totalMarkers(model)).toBeLessThan(3000);
+    expect(totalSelfX(model)).toBe(0);
+  }, 30_000);
 });
 
 describe('Huygens marker front — determinism', () => {
