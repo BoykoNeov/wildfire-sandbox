@@ -710,6 +710,29 @@ export class SurfaceBehaviour {
   }
 
   /**
+   * Whether a cell can carry fire *at all* right now — burnable fuel **and**
+   * moisture below its extinction point. `burnableFuel` alone is not enough: a
+   * cell of live grass wet above its extinction moisture, or one a retardant drop
+   * has re-pinned wet (`docs/plans/phase-4-firefighting.md` §4c), is burnable fuel
+   * that Rothermel gives a zero rate. The raster model enforces this per candidate
+   * — it assembles the candidate's own bed and skips it on `rate <= 0`
+   * (`rothermelFireModel.ts`) — so the marker front must too, or a marker steps
+   * straight over a wet band or a retardant line the raster front stalls at.
+   *
+   * The test is the no-wind, no-slope rate: Rothermel zeroes the *whole* spread
+   * once moisture reaches extinction, so a positive base rate is exactly "the fuel
+   * bed sustains combustion here", independent of the wind that happens to blow.
+   * The bed it reads is the cached one (`surfaceBedFor`), so this is the same cost
+   * the raster candidate pays, not a new evaluation.
+   */
+  carriesFire(fuelId: number, moistureByte: number): boolean {
+    const fp = this.fuel.getParams(fuelId);
+    const rf = fp.rothermel;
+    if (!fp.burnable || !rf) return false;
+    return this.surfaceBedFor(fuelId, rf, moistureByte).rateOfSpreadNoWindSlope > 0;
+  }
+
+  /**
    * Flame residence time [s] for a fuel id — the cosmetic burnout clock, cached
    * per id. `rf` is the fuel's Rothermel descriptor, or null when it has none
    * (then it cannot sustain flame and burns out immediately).

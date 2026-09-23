@@ -505,30 +505,66 @@ R₀·t at *every* angle, which is the rate check and the isotropy check at once
 **Stage 2 — merging + ring retirement (D6).** ✅ *(barriers (D4) and external
 ignitions (D5) landed in Stage 1.)* Grid-assisted, not a polygon-union port — the
 mechanism and the reasoning are in D6 above. Per-cell `owner` welds fronts that
-touch; a front with no open move anywhere in a tick is retired.
-*Gate met:* six new tests in `tests/huygens.test.ts` — two fronts weld with no
-cold seam and every merged cell carries a defined intensity (§5c's merge half),
-an enveloped/barrier-locked front is retired while its interior stays burnt (the
-cost half), spotting throws concurrent perimeters across a firebreak and stays
-finite and bounded, a one-cell cut line holds a planar multi-front ignition (Gate
-1, suppression, on this path) and a gap in it leaks, and **`timber-crown-run`
-steps a full simulated hour** (3600 s at 64²) without a degenerate or runaway
-perimeter, every burning cell intensity-defined, no marker non-finite. Full suite
-443 pass, determinism gate still green. (§5c's *other* check — a flank segment
-cooler than the head — and the barrier pair were already pinned by Stage 1.)
+touch; a front all of whose markers are against a *permanent* wall is retired.
+*Gate met:* ten new tests in `tests/huygens.test.ts`, suite 438 → 448, determinism
+green:
 
-**The cost hazard this stage was built to answer.** Before retirement, a ring
-wholly enclosed by burnt ground kept recomputing an outward push forever (burning
-does not change a cell's fuel id, so its markers still pass the burnable test),
-and a preset throwing hundreds of embers accumulated hundreds of ever-growing
-rings. Retirement — dropping a front once every marker is blocked — is what bounds
-it; measured, `timber-crown-run` at 64² holds a few hundred concurrent fronts
-over the hour rather than growing without limit.
+- two fronts weld with no cold seam and every merged cell carries a defined
+  intensity (§5c's merge half);
+- a front enclosed by **another front's** burnt ground is retired with no barrier
+  involved (the case the nonburnable-box test cannot reach), and separately a
+  nonburnable-box front is retired while its interior stays burnt;
+- retirement on-vs-off ends with strictly fewer live fronts and markers for
+  identical burned area (the cost it buys, below);
+- spotting throws concurrent perimeters across a firebreak and stays finite and
+  bounded;
+- a one-cell cut line holds a planar multi-front ignition (Gate 1, suppression,
+  on this path) and a gap in it leaks;
+- **a wet band stops the front and it crosses once the band dries**, and a whole
+  field going wet stalls the fire *without* retiring it — the two moisture cases
+  the advisor caught (below);
+- **`timber-crown-run` steps a full simulated hour** (3600 s at 64²) without a
+  degenerate or runaway perimeter, every burning cell intensity-defined, no marker
+  non-finite; and it is byte-for-byte deterministic run to run with spotting on.
+
+**Two things the first cut got wrong, fixed here.**
+
+- **Moisture was not a barrier.** Painting checked fuel id only, so a marker
+  stepped straight over a wet band or a retardant line — both burnable fuel that
+  Rothermel gives a zero rate — that the raster front stalls at. The gate is now
+  `SurfaceBehaviour.carriesFire` (burnable **and** base rate > 0), applied to a
+  marker's move and to the paint, matching the raster model's per-candidate
+  `rate <= 0` skip. A *wet* block, unlike a permanent wall, does not count a
+  marker as dead: the band may dry, and the front must be able to cross then.
+- **A globally wet tick retired every fire.** The substep loop breaks before
+  `advance` on a tick where no marker has speed, so nothing set `open` — and
+  retiring on "no open move" then dropped every front for good (the cells stay
+  owned, so nothing re-seeds). Retirement now skips a tick where `advance` never
+  ran.
+
+**The cost retirement actually buys — measured, and smaller than the intuition.**
+The feared hazard was a ring wholly enclosed by burnt ground recomputing an
+outward push forever (burning does not change a cell's fuel id). It is real but
+minor at this scale, because most spot fires weld onto the growing edge and stay
+legitimately active rather than being fully enclosed. At 64² over the hour,
+retirement holds **140 live fronts / 5 302 markers** against **164 / 6 128** with
+it disabled — identical burned area (1 521 cells), a ~13–15 % saving that widens
+with run length as enclosed rings accumulate, **not** the difference between
+bounded and runaway. The `retire: false` option that produced the baseline stays
+as a measurement hatch.
 
 **Stage 3 — crossover/loop removal (D7), and the decision on the default.**
 *Gate:* a front driven around a nonburnable island produces a valid simple
 polygon; the new determinism test is green; `npm run profile` inside the frame
 budget at 512²; then the argued call on whether `'huygens'` becomes the default.
+
+**Carry forward from Stage 2:** grid-welding leaves two merged fronts as two
+polygons whose markers sit permanently stalled against each other along the
+contact — the fronts *overlap* in space without either being a self-crossing
+single perimeter. Stage 3's loop-removal must not mistake such a welded pair for
+a front that has folded onto itself; the distinction is that a self-crossing is
+one ring's edge cutting another edge of *the same* ring. Include a welded pair in
+the crossover test as a negative case.
 
 ---
 

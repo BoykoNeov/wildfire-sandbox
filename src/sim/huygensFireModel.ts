@@ -145,6 +145,14 @@ export interface HuygensFireModelOptions extends SurfaceBehaviourOptions {
   seedRadius?: number;
   /** Vertices in a freshly seeded ring. Default 16. */
   seedVertices?: number;
+  /**
+   * Retire a front once every marker is against a permanent wall (§D6). Default
+   * true — the cost bound. `false` keeps every ring alive forever; it exists only
+   * to measure what retirement is worth (a swallowed ring keeps recomputing an
+   * outward push) and to pin that it holds the front count down, and is never a
+   * mounted configuration.
+   */
+  retire?: boolean;
 }
 
 /** Hard ceiling on substeps per tick — a fire model that hangs is worse than one that lags. */
@@ -158,6 +166,7 @@ export class HuygensFireModel implements IFireModel {
   private readonly maxAdvance: number;
   private readonly seedRadius: number;
   private readonly seedVertices: number;
+  private readonly retire: boolean;
 
   /** Perimeters, in creation order (§D9). */
   private fronts: Front[] = [];
@@ -195,6 +204,7 @@ export class HuygensFireModel implements IFireModel {
     this.maxAdvance = opts.maxAdvance ?? 0.5;
     this.seedRadius = opts.seedRadius ?? 0.5;
     this.seedVertices = opts.seedVertices ?? 16;
+    this.retire = opts.retire ?? true;
   }
 
   step(world: WorldState, dt: number): void {
@@ -244,6 +254,7 @@ export class HuygensFireModel implements IFireModel {
     // clear the per-tick flag now, and let `advance` set it (§D6).
     for (const f of this.fronts) f.open = false;
     let remaining = dt;
+    let advanced = false;
     for (let s = 0; s < MAX_SUBSTEPS && remaining > 1e-9; s++) {
       const maxSpeed = this.computeVelocities(world);
       if (!(maxSpeed > 0)) break;
@@ -251,6 +262,7 @@ export class HuygensFireModel implements IFireModel {
       const sub = Math.min(remaining, this.maxAdvance / maxSpeed);
       this.advance(world, sub, fire, fuelL, intensity, crown, burnElapsed, owner);
       remaining -= sub;
+      advanced = true;
     }
 
     // ── 3. Retire enveloped / dead-ended fronts (§D6) ────────────────────────
@@ -260,7 +272,15 @@ export class HuygensFireModel implements IFireModel {
     // their values) nor lets it re-seed (its cells are owned), it only stops the
     // wasted per-tick recompute of a ring the burn has swallowed. Filtering in
     // place preserves creation order, so determinism (§D9) is untouched.
-    if (this.fronts.some((f) => !f.open)) {
+    //
+    // **Only when `advance` actually ran.** On a tick where *no* marker anywhere
+    // has speed — the whole fire wet above extinction, a rain pulse, a lone ember
+    // in marginal fuel — the substep loop breaks before `advance`, so no front got
+    // to set `open`. Retiring then would silently kill every fire for good (its
+    // cells stay owned, so nothing re-seeds), even though a slow front is meant to
+    // survive and resume when conditions turn. Blocking by a *wet* cell likewise
+    // does not count against a front (see `advance`): only permanent walls do.
+    if (this.retire && advanced && this.fronts.some((f) => !f.open)) {
       this.fronts = this.fronts.filter((f) => f.open);
     }
   }
@@ -389,6 +409,7 @@ export class HuygensFireModel implements IFireModel {
     owner: Int32Array,
   ): void {
     const { width, height } = world;
+    const moist = world.layers.moisture.data;
     const behaviour = this.behaviour;
     const newX = this.newX;
     const newY = this.newY;
@@ -404,26 +425,32 @@ export class HuygensFireModel implements IFireModel {
         const ny = ys[k] + vy[k] * sub;
         const cx = Math.floor(nx);
         const cy = Math.floor(ny);
-        // A marker is *blocked* — pinned in place this substep — by any of three
-        // things: the map edge, fuel that will not carry (FARSITE's `limgrow`
-        // likewise pins a point leaving the landscape or hitting a barrier), or a
-        // cell some *other* front already owns. That last case is the weld: two
-        // fronts that have grown together stop pushing into each other's burn
-        // instead of running through it (§D6). A blocked marker leaves `open`
-        // untouched; an open move sets it, and a front that finds no open move
-        // all tick is retired.
         const j = cx < 0 || cy < 0 || cx >= width || cy >= height ? -1 : cy * width + cx;
-        const blocked =
+        // Two kinds of block, which must be told apart for retirement (§D6).
+        //
+        // *Permanent* walls — the map edge, nonburnable fuel, or ground some other
+        // front already owns — a marker can never cross. The last is the weld: two
+        // fronts that have grown together stop pushing into each other's burn
+        // rather than running through it. A front whose every marker is against a
+        // permanent wall has nowhere to go and is retired.
+        const permanent =
           j < 0 ||
           !behaviour.burnableFuel(fuelL[j]) ||
           (owner[j] >= 0 && owner[j] !== f.id);
-        if (blocked) {
+        // A *temporary* block is a burnable cell that just cannot carry fire yet —
+        // wet above extinction, or retardant-pinned (§4c). The marker holds at the
+        // wall exactly as the raster front stalls there, but the front stays
+        // **open**: the band may dry or the retardant wash out, and it must be
+        // able to cross then (`tests/huygens.test.ts` drydown gate). Only a
+        // permanent wall counts a marker as dead.
+        const wet = !permanent && !behaviour.carriesFire(fuelL[j], moist[j]);
+        if (!permanent) f.open = true;
+        if (permanent || wet) {
           newX[k] = xs[k];
           newY[k] = ys[k];
         } else {
           newX[k] = nx;
           newY[k] = ny;
-          f.open = true;
         }
       }
 
@@ -437,7 +464,12 @@ export class HuygensFireModel implements IFireModel {
           // as already burning and weld to it rather than burn through (§D6).
           if (owner[i] < 0) owner[i] = f.id;
           if (fire[i] !== FireState.Unburned) return;
-          if (!behaviour.burnableFuel(fuelL[i])) return;
+          // Never ignite a cell that cannot carry fire — nonburnable, or wet /
+          // retardant-pinned above extinction. An edge segment between two dry
+          // markers can still cross such a cell, so the paint gate has to be the
+          // full `carriesFire`, not just `burnableFuel` (matching the raster
+          // model's per-candidate `rate <= 0` skip).
+          if (!behaviour.carriesFire(fuelL[i], moist[i])) return;
           fire[i] = FireState.Burning;
           burnElapsed[i] = 0;
           if (fli[k] > 0) {

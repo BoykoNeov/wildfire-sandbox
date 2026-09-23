@@ -9,7 +9,7 @@ import { UniformWeatherProvider } from '../src/sim/uniformWeather';
 import { Fuel } from '../src/sim/basicFuelModel';
 import { TerrainFuelModel } from '../src/sim/terrainFuelModel';
 import { surfaceSpread, ftPerMinToMetersPerSec, metersPerSecToFtPerMin } from '../src/sim/rothermel';
-import { byteToFraction } from '../src/core/moisture';
+import { byteToFraction, fractionToByte } from '../src/core/moisture';
 import { loadScenario } from '../src/scenario/scenario';
 import { findPreset } from '../src/scenario/presets';
 
@@ -538,8 +538,145 @@ describe('Huygens marker front — the spotting preset runs a simulated hour (St
     for (const r of model.perimeters) for (const v of r.xs) if (!Number.isFinite(v)) nan++;
     expect(burned).toBeGreaterThan(300);
     expect(nan).toBe(0);
-    expect(model.perimeters.length).toBeLessThan(SZ * SZ);
+    // Bounded, and non-vacuously so: the measured hour holds ~140 live fronts
+    // (164 with retirement off), so this is comfortably above the real count and
+    // still far below one-front-per-cell — retirement is provably doing work.
+    expect(model.perimeters.length).toBeLessThan(400);
   }, 60_000);
+});
+
+describe('Huygens marker front — a temporarily unburnable cell is not a permanent one', () => {
+  it('the whole field going wet stalls the fire without retiring it; it resumes on drydown', () => {
+    // The blocking bug the advisor caught: `step()` clears every front's `open`
+    // flag, then breaks out of the substep loop before `advance` runs on a tick
+    // where no marker has any speed — so retiring on "no open move" would drop
+    // *every* fire the moment the field goes wet (a rain pulse, marginal
+    // moisture), and since the cells stay owned nothing re-seeds: the fire is dead
+    // for good. Retirement must skip a tick where `advance` never ran.
+    const size = 41;
+    const world = pointIgnition(size, 240, 24, 0); // dry FM1, head travels 24 cells in 240 ticks
+    const model = new HuygensFireModel(new Anderson13FuelModel());
+    const sim = new Simulation(world, [model]);
+
+    sim.run(60, 1); // establish a small fire
+    const established = burnedCells(world);
+    expect(established).toBeGreaterThan(4);
+    expect(model.perimeters.length).toBeGreaterThan(0);
+
+    // Soak the whole field above FM1's extinction moisture (~12%).
+    world.layers.moisture.data.fill(fractionToByte(0.25));
+    sim.run(40, 1);
+    expect(model.perimeters.length).toBeGreaterThan(0); // the fire is NOT retired…
+    expect(burnedCells(world)).toBe(established); // …and did not spread while wet
+
+    // Dry it back out — the front is still there and picks up where it left off.
+    world.layers.moisture.data.fill(MOIST);
+    sim.run(140, 1);
+    expect(burnedCells(world)).toBeGreaterThan(established);
+  });
+
+  it('a wet band stops the front, and the front crosses once the band dries (item 4)', () => {
+    // The suppression drydown case on this path. Painting checks fuel id, but a
+    // wet or retardant-pinned cell is burnable fuel Rothermel gives a zero rate —
+    // so without the moisture gate a marker steps straight over the band the
+    // raster front stalls at. (Retardant suppresses by re-pinning `moisture`, the
+    // very layer this gate reads, so it is covered by the same code path.)
+    const size = 61;
+    const world = pointIgnition(size, 200, 20, 0);
+    const cx = size >> 1;
+    const cy = size >> 1;
+    const bandX = cx + 6;
+    const wet = fractionToByte(0.25); // above FM1 extinction
+    for (let y = 0; y < size; y++) {
+      world.layers.moisture.set(bandX, y, wet);
+      world.layers.moisture.set(bandX + 1, y, wet);
+    }
+    const model = new HuygensFireModel(new Anderson13FuelModel());
+    const sim = new Simulation(world, [model]);
+
+    sim.run(140, 1);
+    const eastOfBand = (w: WorldState): number => {
+      let n = 0;
+      for (let y = 0; y < size; y++) for (let x = bandX + 2; x < size; x++) {
+        if (w.layers.fire.get(x, y) !== FireState.Unburned) n++;
+      }
+      return n;
+    };
+    expect(world.layers.fire.get(bandX - 1, cy)).not.toBe(FireState.Unburned); // reached the band
+    expect(eastOfBand(world)).toBe(0); // …but did not cross it while wet
+
+    // Dry the band; the front that was held at it now crosses.
+    for (let y = 0; y < size; y++) {
+      world.layers.moisture.set(bandX, y, MOIST);
+      world.layers.moisture.set(bandX + 1, y, MOIST);
+    }
+    sim.run(160, 1);
+    expect(eastOfBand(world)).toBeGreaterThan(0);
+  });
+});
+
+describe('Huygens marker front — retirement fires on envelopment, and it is what it costs (Stage 2)', () => {
+  /** A dry all-burnable field, a spot lit at centre, ringed by a box of ignitions. */
+  function ringAroundSpot(size: number, steps: number, retire: boolean): { world: WorldState; model: HuygensFireModel; sim: Simulation } {
+    const cellSize = (analyticHeadMps(0) * steps) / 18;
+    const world = createWorld({ width: size, height: size, seed: 3, cellSize });
+    world.layers.fuel.data.fill(FM);
+    world.layers.moisture.data.fill(MOIST);
+    const c = size >> 1;
+    world.layers.fire.set(c, c, FireState.Burning); // the spot to be enveloped
+    const r = 6;
+    for (let d = -r; d <= r; d++) {
+      world.layers.fire.set(c + d, c - r, FireState.Burning);
+      world.layers.fire.set(c + d, c + r, FireState.Burning);
+      world.layers.fire.set(c - r, c + d, FireState.Burning);
+      world.layers.fire.set(c + r, c + d, FireState.Burning);
+    }
+    const model = new HuygensFireModel(new Anderson13FuelModel(), { retire });
+    return { world, model, sim: new Simulation(world, [model]) };
+  }
+
+  it('a front enclosed by ANOTHER front’s burnt ground is retired — no barrier involved', () => {
+    // The case Stage 2 exists for, which the nonburnable-box test does not reach:
+    // the centre spot is walled off not by rock but by the surrounding fires' own
+    // burnt ground, so every one of its markers steps onto another front's cell
+    // and it is retired. There is no nonburnable fuel anywhere, so envelopment is
+    // the only thing that could have retired it.
+    const size = 41;
+    const steps = 300;
+    const { world, model, sim } = ringAroundSpot(size, steps, true);
+    let peak = 0;
+    for (let k = 0; k < 20; k++) {
+      sim.run(steps / 20, 1);
+      peak = Math.max(peak, model.perimeters.length);
+    }
+    let nonburnable = 0;
+    for (const v of world.layers.fuel.data) if (v === Fuel.Nonburnable) nonburnable++;
+    expect(nonburnable).toBe(0);
+    expect(peak).toBeGreaterThan(model.perimeters.length); // some front was retired
+  });
+
+  it('retirement lowers the live front and marker counts (the cost it buys, item 2)', () => {
+    // The on/off baseline: the same envelopment scenario with retirement disabled
+    // keeps the swallowed rings, so it ends with strictly more live fronts and
+    // markers — and the burned area is identical, because retirement never touches
+    // output. This is the mechanism behind the measured hour (140 vs 164 fronts,
+    // 5302 vs 6128 markers at 64²).
+    const size = 41;
+    const steps = 300;
+    const on = ringAroundSpot(size, steps, true);
+    const off = ringAroundSpot(size, steps, false);
+    on.sim.run(steps, 1);
+    off.sim.run(steps, 1);
+    const markers = (m: HuygensFireModel): number => m.perimeters.reduce((s, r) => s + r.xs.length, 0);
+    expect(on.model.perimeters.length).toBeLessThan(off.model.perimeters.length);
+    expect(markers(on.model)).toBeLessThan(markers(off.model));
+    const burned = (w: WorldState): number => {
+      let n = 0;
+      for (const v of w.layers.fire.data) if (v !== FireState.Unburned) n++;
+      return n;
+    };
+    expect(burned(on.world)).toBe(burned(off.world)); // identical output
+  });
 });
 
 describe('Huygens marker front — determinism', () => {
@@ -584,4 +721,42 @@ describe('Huygens marker front — determinism', () => {
     // …and the run actually did something, so the hash is not of an empty map.
     expect(a).not.toBe(0x811c9dc5);
   });
+
+  it('holds byte-for-byte with SPOTTING ON — the many-front path (item 5)', () => {
+    // The test above runs `spotting: false`, so it only ever has one front and
+    // never exercises the code Stage 2 added: first-owner-wins, welding and
+    // retirement all depend on the order fronts are created and processed. With
+    // spotting on, `timber-crown-run` carries hundreds of concurrent fronts, so
+    // this is the determinism gate on the new machinery.
+    const base = findPreset('timber-crown-run')!;
+    const once = (): number => {
+      const l = loadScenario({
+        ...base,
+        width: 64,
+        height: 64,
+        spreadEngine: 'huygens',
+        ignitions: 'center',
+        agents: undefined,
+      });
+      l.sim.run(700, 1); // well past the first embers, into the multi-front regime
+      const { fire, intensity, crown } = l.world.layers;
+      let h = 0x811c9dc5; // FNV-1a
+      const mix = (v: number): void => {
+        h ^= v & 0xff;
+        h = Math.imul(h, 0x01000193);
+      };
+      for (let i = 0; i < fire.data.length; i++) mix(fire.data[i]);
+      for (let i = 0; i < intensity.data.length; i++) {
+        const kw = Math.round(intensity.data[i]);
+        mix(kw);
+        mix(kw >>> 8);
+        mix(kw >>> 16);
+      }
+      for (let i = 0; i < crown.data.length; i++) mix(crown.data[i]);
+      return h >>> 0;
+    };
+    const a = once();
+    expect(once()).toBe(a);
+    expect(a).not.toBe(0x811c9dc5);
+  }, 30_000);
 });
