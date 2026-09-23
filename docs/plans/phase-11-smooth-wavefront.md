@@ -471,15 +471,22 @@ byte-identical** — no preset ever created a pocket front — so no measured nu
 moved. A flood fill of what *is* left enclosed and unburned at the hour, per
 preset, finds almost nothing orphaned on Huygens (1 dry cell with no marker within
 two cells, `timber-crown-run`); the rest is still being burned into or too wet.
-Worth knowing for the default call: **the raster leaves holes too**, for a
-physical-ish reason — a pocket rim that burns out before the arrival accumulator
-crosses slow fuel — 425 dry enclosed cells with no burning neighbour on
-`timber-crown-run` at the hour.
+The raster's enclosed-unburned cells at the hour (437 dry on `timber-crown-run`,
+382 of them one grass clump) are **not** holes either: a raster cell stays a spread
+source once it has ever ignited (`isIgnited`: Burning *or* Burned), so the raster
+never abandons a dry pocket, and that clump is a slow backing burn still going in —
+486 → 294 → 223 → 163 unburned cells in its box at 60 / 75 / 90 / 120 min. (A first
+reading of the same count as "the raster leaves holes too, because the rim burns
+out" was wrong — it tested only for a *Burning* neighbour — and was withdrawn before
+it reached the user as settled.) So after this fix the two engines agree on pockets:
+both burn them in.
 
-A consequence to know: a *wet* pocket keeps its inward front alive (a wet cell is
+The same holds for a *wet* pocket. Its inward front stays alive (a wet cell is
 still a frontier, as for an outward front held at a wet band), so it burns in once
-it dries — hours later, if the scenario says so. The raster, whose rim has burned
-out by then, would leave it.
+it dries, with no ember needed — and the raster does exactly the same from its
+burned-out rim (checked: a dried wet 80-cell island, no ember, 0 cells left on
+both engines 300 s after drying). A retardant-held patch the fire has closed around
+therefore burns once the retardant wears off, on either engine.
 
 ### D9 — Determinism gets ordering rules and its own test
 
@@ -829,7 +836,9 @@ triggers the §8 revalidation), and its fire model still costs about 4× the ras
 scope decision, left to the user (§5d). Flipping remains a one-line change plus the
 §8 recomputation. (The §D8 hole caveat that used to be listed here is gone — pockets
 burn in now, §D8 "Reversed" — and so is the early-ownership bug below; neither
-moved a preset's output.)
+moved a preset's output. Re-profiled after both, same 512² spotting hour:
+`fire:huygens` 8.29 ms/step, sim total 10.34 — no slower than the 9.48 above, so
+the pocket test on dropped loops costs nothing measurable.)
 
 **Open after the review, not done:**
 

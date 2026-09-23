@@ -296,8 +296,8 @@ crossover removal splits off with unburned fuel inside is kept as an
 **inward-wound** front with the parent's id, instead of being dropped as a
 permanent hole (a slow FM8 patch in wind-driven FM1: 60/100 cells stranded → 0).
 Ears are not kept by that test because they lie over just-painted ground. The raster
-leaves holes too (a rim burning out before slow fuel is crossed), so "Huygens
-leaves holes" is no longer a reason for the default either way.
+never abandons a dry pocket (a Burned cell stays a spread source), so the two engines
+now agree: pockets, wet ones included once dry, burn in on both.
 
 Next: the additive future phases (WUI structures → industrial). Each phase must be
 runnable and verifiable before the next.
