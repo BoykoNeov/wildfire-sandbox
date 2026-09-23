@@ -10,7 +10,7 @@ import { SpottingSystem } from '../src/sim/spottingSystem';
 import { UniformWeatherProvider } from '../src/sim/uniformWeather';
 import { Fuel } from '../src/sim/basicFuelModel';
 import { TerrainFuelModel } from '../src/sim/terrainFuelModel';
-import { segmentCross, selfIntersects, type Crossing, type Ring } from '../src/sim/perimeter';
+import { segmentCross, selfIntersects, signedArea2, type Crossing, type Ring } from '../src/sim/perimeter';
 import { surfaceSpread, ftPerMinToMetersPerSec, metersPerSecToFtPerMin } from '../src/sim/rothermel';
 import { byteToFraction, fractionToByte } from '../src/core/moisture';
 import { loadScenario } from '../src/scenario/scenario';
@@ -852,6 +852,57 @@ describe('Huygens marker front — self-crossings are removed (Stage 3, §D7)', 
     expect(peak).toBeGreaterThan(100); // non-vacuous: there was a front to bound
     expect(peak).toBeLessThan(3000);
     expect(everCrossed).toBe(false);
+  }, 30_000);
+});
+
+/**
+ * A slow burnable patch (FM8, closed timber litter) in FM1 grass under a 3 m/s
+ * wind: the grass front races round the patch and its lips meet behind it long
+ * before the slow litter burns through — the pocket §D8 is about. Returns the
+ * patch cells still unburned after `steps`, and the per-sample areas of every
+ * inward-wound front (a pocket burning in).
+ */
+function slowPatch(engine: 'huygens' | 'raster', steps: number): { unburned: number; pocketAreas: number[] } {
+  const size = 81;
+  const cellSize = (analyticHeadMps(0) * 150) / 26;
+  const world = createWorld({ width: size, height: size, seed: 1, cellSize });
+  world.layers.fuel.data.fill(FM);
+  world.layers.moisture.data.fill(MOIST);
+  const c = size >> 1;
+  const patch: number[] = [];
+  for (let y = c - 5; y < c + 5; y++) for (let x = c - 5; x < c + 5; x++) {
+    world.layers.fuel.set(x, y, 8);
+    patch.push(y * size + x);
+  }
+  world.layers.fire.set(c - 13, c, FireState.Burning);
+  const model = engine === 'huygens' ? new HuygensFireModel(new Anderson13FuelModel()) : new RothermelFireModel(new Anderson13FuelModel());
+  const sim = new Simulation(world, [new UniformWeatherProvider(3, 0), model]);
+  const pocketAreas: number[] = [];
+  for (let t = 1; t <= steps; t++) {
+    sim.step(1);
+    if (engine === 'huygens' && t % 8 === 0) {
+      // Inward-wound (the opposite of the healthy negative CCW-on-screen sign).
+      const inward = (model as HuygensFireModel).perimeters.filter((r) => signedArea2(r) > 0);
+      if (inward.length > 0) pocketAreas.push(inward.reduce((s, r) => s + Math.abs(signedArea2(r)) / 2, 0));
+    }
+  }
+  return { unburned: patch.filter((i) => world.layers.fire.data[i] === FireState.Unburned).length, pocketAreas };
+}
+
+describe('Huygens marker front — a pocket the front closes around burns in (§D8)', () => {
+  it('a slow patch the grass front wraps is burned out from its rim, as on the raster', () => {
+    // Before this, crossover removal kept only the outer loop and dropped the loop
+    // round the pocket, so nothing was left to burn it: measured, 60 of the
+    // patch's 100 cells stayed unburned for good, where the raster burns all 100.
+    // Now a dropped loop that still has unburned fuel inside it is kept, wound
+    // to burn inward, and shrinks until the pocket is gone.
+    const h = slowPatch('huygens', 120);
+    expect(h.pocketAreas.length).toBeGreaterThan(2); // non-vacuous: a pocket front existed
+    for (let k = 1; k < h.pocketAreas.length; k++) {
+      expect(h.pocketAreas[k]).toBeLessThan(h.pocketAreas[k - 1]); // …and burned INWARD
+    }
+    expect(h.unburned).toBe(0);
+    expect(slowPatch('raster', 120).unburned).toBe(0); // the reference engine agrees
   }, 30_000);
 });
 

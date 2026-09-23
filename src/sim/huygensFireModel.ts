@@ -10,6 +10,7 @@ import {
   decrossRing,
   selfIntersects,
   reverseRing,
+  pointInRing,
   signedArea2,
   area,
   MIN_RING_VERTICES,
@@ -59,9 +60,9 @@ import { SurfaceBehaviour, type SurfaceBehaviourOptions } from './surfaceBehavio
  *
  * Advance, substepping, density control, barriers, seeding, rasterisation
  * (Stage 1), **merging plus ring retirement** (Stage 2, §D6), and crossover
- * removal for a self-intersecting front (Stage 3, §D7, {@link decrossFronts}).
- * **Not done:** burnable enclaves, which are out of scope for the phase entirely
- * (§D8).
+ * removal for a self-intersecting front (Stage 3, §D7, {@link decrossFronts}),
+ * which also keeps a pocket the front closes around as an inward-burning front
+ * (§D8, originally out of scope; see there).
  *
  * **Merging here is grid-assisted, not a polygon-union transcription** — a
  * deliberate, documented reversal of §D6's "port FARSITE's `MergeFireRings`".
@@ -116,6 +117,15 @@ interface Front extends Ring {
    * (wind, moisture) can still start it moving on a later tick.
    */
   open: boolean;
+  /**
+   * Does this front burn **inward** — a pocket of unburned fuel the fire has closed
+   * around, burning in from its rim (FARSITE's reversed-orientation inner ring,
+   * §D8)? Its winding is the opposite of an ordinary front's, which is all it takes
+   * for Richards' equations to move its markers into the loop instead of out of it;
+   * the flag exists so crossover removal keeps that winding instead of normalising
+   * it back to an expanding one.
+   */
+  inward: boolean;
 }
 
 export interface HuygensFireModelOptions extends SurfaceBehaviourOptions {
@@ -327,7 +337,7 @@ export class HuygensFireModel implements IFireModel {
     }
 
     // ── 4. Remove self-crossings (§D7, Stage 3) ──────────────────────────────
-    if (this.decross && advanced) this.decrossFronts();
+    if (this.decross && advanced) this.decrossFronts(width, world.height, fire, fuelL);
   }
 
   /**
@@ -340,47 +350,62 @@ export class HuygensFireModel implements IFireModel {
    * carrying on outward — and a reversed *ear*, the piece that folded back. Left
    * alone the reversed ear moves markers inward and multiplies them without bound.
    *
-   * **Only the single largest loop is kept** — the outer boundary of the burn —
-   * and every other sub-loop is discarded. This is the one point that matters, and
-   * an earlier version that kept *all* correctly-wound loops as separate fronts
-   * blew up spectacularly: a strongly folded front splits into many loops, they
-   * share the parent id so they do not weld against each other (§D6), they overlap
-   * and re-cross, and each tick splits them again — a windy island run reached
-   * **9.3 million markers**. Keeping exactly one loop per crossing front makes the
-   * marker count bounded by the perimeter, which is the whole point.
+   * **The single largest loop is kept as the front** — the outer boundary of the
+   * burn — and the ears are discarded. This is the one point that matters, and an
+   * earlier version that kept *all* correctly-wound loops as separate fronts blew
+   * up spectacularly: a strongly folded front splits into many loops, they share
+   * the parent id so they do not weld against each other (§D6), they overlap and
+   * re-cross, and each tick splits them again — a windy island run reached
+   * **9.3 million markers**. Keeping one loop per crossing front makes the marker
+   * count bounded by the perimeter, which is the whole point.
    *
-   * The kept loop **inherits the parent's id** so its markers, which sit on cells
-   * the parent painted, are not read as another front's ground and retired away
-   * (§D6). It is flipped to the healthy CCW-on-screen winding if the split left it
-   * reversed. Dropping the other loops **un-burns nothing** — their cells are
-   * already painted — so burned area is preserved (pinned in `tests/huygens.test.ts`
-   * against a `decross: false` run). Two consequences follow, both recorded in the
-   * plan: a **burnable pocket** the front closes around is dropped with the inner
-   * loops, so it is left as an unburned hole rather than "treated as burned"
-   * (narrowing §D8); and a front that genuinely pinched into two comparable lobes
+   * **The one other loop kept is a pocket** (§D8): a loop with unburned burnable
+   * fuel inside it, which the front has closed around. Dropping it left the pocket
+   * as a permanent hole — measured, 60 of a slow 100-cell patch in wind-driven
+   * grass, where the raster burns all 100 — because nothing was left to burn into
+   * it. It is kept as its own front, wound to burn **inward** (FARSITE's
+   * reversed-orientation inner ring), so it shrinks until the pocket is burned or it
+   * has nothing left near it and is retired. This does not reopen the blow-up: an
+   * ear lies over ground its own markers just painted, so it never has unburned
+   * fuel inside it, and a pocket sits inside the outer loop, not over it.
+   *
+   * Kept loops **inherit the parent's id** so their markers, which sit on cells the
+   * parent painted, are not read as another front's ground and retired away (§D6).
+   * Each is wound the way it burns — CCW-on-screen to expand, the reverse to burn
+   * inward. Dropping the ears **un-burns nothing** — their cells are already painted —
+   * so burned area is preserved (pinned in `tests/huygens.test.ts` against a
+   * `decross: false` run). A front that genuinely pinched into two comparable lobes
    * would keep only the larger, but a barrier-driven pinch splits into two fronts
    * through the barrier, not through a self-crossing, so this case does not arise
    * from the mounted scenarios (burned area confirms it stays within a few cells).
    *
-   * Determinism (§D9): fronts are processed in creation order; each crossing front
-   * is replaced by exactly one, so order is preserved.
+   * Determinism (§D9): fronts are processed in creation order, and a front's
+   * pockets are inserted straight after it.
    */
-  private decrossFronts(): void {
+  private decrossFronts(width: number, height: number, fire: Uint8Array, fuelL: Uint8Array): void {
     // Each front is iterated to its own fixed point: keeping the largest loop can,
     // on a heavily folded front, leave that loop with a crossing of its own that a
     // second pass clears. Fronts do not interact here, so this is the same result
     // as sweeping every front once per pass — but a clean front is tested exactly
     // once per tick, and a front that was never touched is never re-tested.
     // MAX_DECROSS_PASSES is a safety stop, not an expected limit.
-    const fronts = this.fronts;
-    let keep = 0;
-    for (let idx = 0; idx < fronts.length; idx++) {
-      let f: Front | null = fronts[idx];
+    //
+    // Pockets split off a front are inserted straight after it, so the order stays
+    // a pure function of the run (§D9). They are simple loops by construction and
+    // are not re-tested until the next tick.
+    const before = this.fronts;
+    const after: Front[] = [];
+    for (let idx = 0; idx < before.length; idx++) {
+      let f: Front | null = before[idx];
+      const pockets: Front[] = [];
       for (let pass = 0; pass < MAX_DECROSS_PASSES && f !== null && selfIntersects(f); pass++) {
-        // Keep the single largest loop — the outer boundary — and drop the rest.
+        // Keep the single largest loop — the outer boundary — and, of the rest,
+        // every loop that has unburned fuel inside it: a pocket the front has
+        // closed around. Everything else — the folded-over ears — is dropped.
         let best: Ring | null = null;
         let bestArea = -1;
-        for (const lp of decrossRing(f)) {
+        const loops = decrossRing(f);
+        for (const lp of loops) {
           if (lp.xs.length < MIN_RING_VERTICES) continue; // sliver
           const a = area(lp);
           if (a > bestArea) {
@@ -388,16 +413,26 @@ export class HuygensFireModel implements IFireModel {
             best = lp;
           }
         }
+        for (const lp of loops) {
+          if (lp === best || lp.xs.length < MIN_RING_VERTICES) continue;
+          if (!enclosesUnburnedFuel(lp, width, height, fire, fuelL, this.behaviour)) continue;
+          if (signedArea2(lp) < 0) reverseRing(lp); // wind it to burn inward
+          pockets.push(makeFront(lp, f.id, true));
+        }
         if (best) {
-          if (signedArea2(best) >= 0) reverseRing(best); // normalise to CCW-on-screen
-          f = makeFront(best, f.id);
+          // Keep the front's own winding: CCW-on-screen (negative) to expand, the
+          // reverse to burn inward. Normalising an inward front the ordinary way
+          // would turn a pocket fire into one expanding out over its own ash.
+          if (f.inward ? signedArea2(best) < 0 : signedArea2(best) >= 0) reverseRing(best);
+          f = makeFront(best, f.id, f.inward);
         } else {
           f = null; // the whole front collapsed to slivers — dropped; its cells stay burned
         }
       }
-      if (f !== null) fronts[keep++] = f;
+      if (f !== null) after.push(f);
+      for (const p of pockets) after.push(p);
     }
-    fronts.length = keep;
+    this.fronts = after;
   }
 
   /**
@@ -710,10 +745,11 @@ export class HuygensFireModel implements IFireModel {
   }
 }
 
-function makeFront(ring: Ring, id: number): Front {
+function makeFront(ring: Ring, id: number, inward = false): Front {
   const n = ring.xs.length;
   return {
     id,
+    inward,
     xs: ring.xs,
     ys: ring.ys,
     vx: new Array(n).fill(0),
@@ -722,6 +758,43 @@ function makeFront(ring: Ring, id: number): Front {
     crown: new Array(n).fill(0),
     open: false,
   };
+}
+
+/**
+ * Whether any cell whose centre lies inside `ring` is unburned burnable fuel —
+ * what tells a pocket the front has closed around (worth burning into) from a
+ * folded-over ear (which lies over ground the front has already painted).
+ * Burnable, not "carries fire now": a wet pocket is still a pocket, and its front
+ * is held at the wet cells exactly as an outward front is held at a wet band.
+ */
+function enclosesUnburnedFuel(
+  ring: Ring,
+  width: number,
+  height: number,
+  fire: Uint8Array,
+  fuelL: Uint8Array,
+  behaviour: SurfaceBehaviour,
+): boolean {
+  const { xs, ys } = ring;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let k = 0; k < xs.length; k++) {
+    if (xs[k] < minX) minX = xs[k];
+    if (xs[k] > maxX) maxX = xs[k];
+    if (ys[k] < minY) minY = ys[k];
+    if (ys[k] > maxY) maxY = ys[k];
+  }
+  const x0 = Math.max(0, Math.floor(minX));
+  const x1 = Math.min(width - 1, Math.floor(maxX));
+  const y0 = Math.max(0, Math.floor(minY));
+  const y1 = Math.min(height - 1, Math.floor(maxY));
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const j = y * width + x;
+      if (fire[j] !== FireState.Unburned || !behaviour.burnableFuel(fuelL[j])) continue;
+      if (pointInRing(ring, x + 0.5, y + 0.5)) return true;
+    }
+  }
+  return false;
 }
 
 /** Keep the per-marker scratch in step with a ring density control has resized. */

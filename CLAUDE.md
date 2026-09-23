@@ -276,7 +276,7 @@ bounded. Two moisture bugs the advisor caught were fixed alongside (a wet/retard
 band is now a barrier the marker front respects; a globally-wet tick no longer
 retires every fire). **`'raster'` stays the default** (recommended; the flip is
 left to the user, §7b) and no `docs/science.md` number has moved — on soft
-reasons only (every measured number is on the raster path; the §D8 hole caveat).
+reasons only (every measured number is on the raster path; ~4× the cost).
 The "hard" perf reason first given was **a retirement leak**, found in review: a
 front buried in its own burnt ground kept creeping and was never retired, so at
 512² four fifths of ~6 000 live fronts had nothing left to burn. A front is now
@@ -287,9 +287,17 @@ measured, not derived (one cell lost 27 cells on a 64² hour), and output
 Full spotting hour, `fire:huygens`: 512² 41.97 → **9.48 ms/step**, the preset's
 own 256² 34 → **6.93** (raster 1.16 / 1.72) — near, not inside, the 60 fps budget
 on the 512² terrain view. The O(n²) crossover search is now about a quarter of
-that and is the next saving (bucketing, not done). Burnable enclaves remain out of scope (§D8): a pocket the
-front seals around would be left as an unburned hole, though on the fuels tested
-Huygens burns *more* of a damp patch than the raster, not less.
+that and is the next saving (bucketing, not done).
+**Two correctness fixes after review, both byte-identical on every preset's hour**
+(neither ever triggered there): a cell is **owned only once lit** (the paint used
+to claim wet cells it crossed, so a dried patch refused embers — 79/80 cells
+stranded); and **pockets burn in** (§D8, reversed from "out of scope"): a loop the
+crossover removal splits off with unburned fuel inside is kept as an
+**inward-wound** front with the parent's id, instead of being dropped as a
+permanent hole (a slow FM8 patch in wind-driven FM1: 60/100 cells stranded → 0).
+Ears are not kept by that test because they lie over just-painted ground. The raster
+leaves holes too (a rim burning out before slow fuel is crossed), so "Huygens
+leaves holes" is no longer a reason for the default either way.
 
 Next: the additive future phases (WUI structures → industrial). Each phase must be
 runnable and verifiable before the next.

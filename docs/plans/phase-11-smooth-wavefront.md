@@ -6,8 +6,9 @@
 > **crossover removal** (Stage 3) — and §7's table is measured below. `'raster'`
 > remains the default, so nothing in [`docs/science.md`](../science.md) has moved.
 > The remaining Stage 3 item is **the argued call on whether the default flips**,
-> with the 512² profile below as its input; §D8's burnable enclaves stay out of
-> scope for the phase.
+> with the 512² profile below as its input. §D8's burnable enclaves, first put out
+> of scope, were brought in after review: a pocket the front closes around now
+> burns in from its rim (§D8, "Reversed").
 >
 > **Two mechanisms are grid-assisted rather than transcriptions of FARSITE, both
 > deliberate reversals recorded below:** the Stage 2 merge (§D6, not
@@ -442,6 +443,44 @@ that genuinely seals — nonburnable-ringed, or so slow the lips close first —
 the mounted scenarios do not routinely produce. The number goes in §7b's ledger as
 *not* a strike against Huygens on the fuels tested.
 
+**Reversed (after the Stage 3 review): pockets now burn in.** The measurement
+above tested the wrong patch. A *damp* patch is entered before it seals; a *slow*
+one is not. FM8 litter, 10×10 cells, in FM1 grass under a 3 m/s wind
+(`tests/huygens.test.ts`, "a pocket the front closes around burns in"): the grass
+lips meet behind the patch while the litter has barely started, the loop around it
+was dropped, and **60 of the 100 patch cells stayed unburned for good** (FM9: 43);
+the raster burns all 100. A real fire closed round a dry pocket keeps burning into
+it from every side, so the hole was an artefact of the outline bookkeeping, not
+physics.
+
+The fix is FARSITE's inner ring, done the grid-assisted way the rest of this phase
+is: in the crossover removal, a dropped loop that has **unburned burnable fuel
+inside it** (cell centres, `pointInRing`) is kept as its own front, **wound to burn
+inward** and flagged so a later decross keeps that winding, with the parent's id
+(a fresh id would be walled in by the parent's ground, §D6) and inserted straight
+after the parent (§D9). Ears are not kept by this test because they lie over ground
+their own markers just painted. The first idea — re-seed from a burning cell with
+dry fuel beside it and no front nearby — was dropped before it was built: seeding
+refuses owned cells, a fresh id would be walled in, and the rim may already be
+burned out by the time the loop is dropped.
+
+Measured: the pocket front's area shrinks every sample (86 → 14 cells²) and it is
+retired when the patch is gone; the patch burns out *faster* than on the raster
+(18 vs 48 unburned at 40 s). **Every preset's one-hour Huygens run is
+byte-identical** — no preset ever created a pocket front — so no measured number
+moved. A flood fill of what *is* left enclosed and unburned at the hour, per
+preset, finds almost nothing orphaned on Huygens (1 dry cell with no marker within
+two cells, `timber-crown-run`); the rest is still being burned into or too wet.
+Worth knowing for the default call: **the raster leaves holes too**, for a
+physical-ish reason — a pocket rim that burns out before the arrival accumulator
+crosses slow fuel — 425 dry enclosed cells with no burning neighbour on
+`timber-crown-run` at the hour.
+
+A consequence to know: a *wet* pocket keeps its inward front alive (a wet cell is
+still a frontier, as for an outward front held at a wet band), so it burns in once
+it dries — hours later, if the scenario says so. The raster, whose rim has burned
+out by then, would leave it.
+
 ### D9 — Determinism gets ordering rules and its own test
 
 The raster sweeps cells in index order, which is a total order for free. A marker
@@ -786,33 +825,31 @@ for that.)
 **The default call: keep `'raster'`, recommended — but the "hard reason" given
 here before is gone.** It was the leak. What remains are the soft reasons: every
 number in [`docs/science.md`](../science.md) is on the raster path (flipping
-triggers the §8 revalidation), Huygens carries the §D8 hole caveat, and its fire
-model still costs about 4× the raster's at 256² and 8× at 512². Whether that price is worth the smoother front is a
+triggers the §8 revalidation), and its fire model still costs about 4× the raster's at 256² and 8× at 512². Whether that price is worth the smoother front is a
 scope decision, left to the user (§5d). Flipping remains a one-line change plus the
-§8 recomputation.
+§8 recomputation. (The §D8 hole caveat that used to be listed here is gone — pockets
+burn in now, §D8 "Reversed" — and so is the early-ownership bug below; neither
+moved a preset's output.)
 
 **Open after the review, not done:**
 
 - **Bucket the crossover search** by cell — about a quarter of `fire:huygens` now,
   and the saving most likely to bring the 512² terrain view inside 60 fps.
-- **Ownership is claimed too early.** `advance`'s paint sets `owner` on a cell
-  *before* checking that it will ignite, so a front claims wet and nonburnable
-  cells it merely touches. **Confirmed by test** (commit `9001f54`,
-  `tests/huygens.test.ts` "a wet cell the front touched but did not light"): the
-  §D7 island geometry with the island *wet* instead of rock. The front claims 3–4
-  island cells without lighting them — all at the corners, where an edge cuts
-  across. Once the island dries, an ember landing **on a claimed cell** lights that
-  one cell and seeds no front: 79 of the 80 island cells stay unburned, where the
-  raster burns all 80. An ember at the island's **centre** is barely affected (1
-  cell left unburned windless, 0 at 3 m/s): the weld blocks another front's
-  *markers*, but its *edges* still paint the claimed cells. So the mechanism is
-  real, and the bad case needs an ember (or player ignition, or backburn) to land
-  on one of a few specific cells; how often that happens on the shipped presets is
-  **not measured**. It is the first *correctness* reason against the default flip,
-  not just a soft one. Pinned as `it.fails`; not fixed. A fix — the obvious one is
-  to claim a cell only when it ignites or is already alight — flips both new tests
-  and should be held to the retirement fix's gate (byte-identical preset hours, or
-  an explained diff).
+- ~~**Ownership is claimed too early.**~~ **Fixed** (commit `a6c91bf`).
+  `advance`'s paint set `owner` on a cell *before* checking that it would ignite,
+  so a front claimed wet and nonburnable cells it merely touched. Confirmed by test
+  first (commit `9001f54`): the §D7 island geometry with the island *wet* instead of
+  rock. The front claimed 3–4 island cells without lighting them — all at the
+  corners, where an edge cuts across. Once the island dried, an ember landing **on
+  a claimed cell** lit that one cell and seeded no front: 79 of the 80 island cells
+  stayed unburned, where the raster burns all 80. An ember at the island's
+  **centre** was barely affected (1 cell windless, 0 at 3 m/s): the weld blocked
+  another front's *markers*, but its *edges* still painted the claimed cells. Now a
+  cell is claimed only when the paint lights it or finds it already alight; the
+  regression test (`tests/huygens.test.ts`, "a wet cell the front touches but
+  cannot light is not claimed") fails without the fix, and **every preset's
+  one-hour Huygens run is byte-identical** before and after — so the bug never bit
+  on the shipped scenarios.
 - The default flip (above) is the user's call.
 
 (Burned area differs between engines — e.g. 34 329 vs the raster's ~14 k at one
