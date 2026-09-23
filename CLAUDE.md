@@ -275,13 +275,18 @@ area preserved to within a cell, and *faster* overall because markers stay
 bounded. Two moisture bugs the advisor caught were fixed alongside (a wet/retardant
 band is now a barrier the marker front respects; a globally-wet tick no longer
 retires every fire). **`'raster'` stays the default** (recommended; the flip is
-left to the user, §7b) and no `docs/science.md` number has moved. Perf is the hard
-reason: at 256² the marker front is cheap (~0.56 ms/step, and that is the size the
-presets and the browser run at), but at 512² over a full spotting hour it averages
-~42 ms/step — well past the 16.67 ms frame budget the raster (~1.2 ms) holds with
-room to spare. The driver is the marker count of the many fronts a spotting fire
-carries, not the O(n²) crossover search (a single ring stays ~1.75 ms), so the
-search is left naive. Burnable enclaves remain out of scope (§D8): a pocket the
+left to the user, §7b) and no `docs/science.md` number has moved — on soft
+reasons only (every measured number is on the raster path; the §D8 hole caveat).
+The "hard" perf reason first given was **a retirement leak**, found in review: a
+front buried in its own burnt ground kept creeping and was never retired, so at
+512² four fifths of ~6 000 live fronts had nothing left to burn. A front is now
+also retired once no marker has an unburned burnable cell within **two** cells —
+measured, not derived (one cell lost 27 cells on a 64² hour), and output
+**byte-identical** to no retirement at all (pinned in `tests/huygens.test.ts`).
+Full spotting hour, `fire:huygens`: 512² 41.97 → **9.48 ms/step**, the preset's
+own 256² 34 → **6.93** (raster 1.16 / 1.72) — near, not inside, the 60 fps budget
+on the 512² terrain view. The O(n²) crossover search is now about a quarter of
+that and is the next saving (bucketing, not done). Burnable enclaves remain out of scope (§D8): a pocket the
 front seals around would be left as an unburned hole, though on the fuels tested
 Huygens burns *more* of a damp patch than the raster, not less.
 

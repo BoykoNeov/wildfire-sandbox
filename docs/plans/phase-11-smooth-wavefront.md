@@ -409,9 +409,9 @@ is preserved to within a cell** (windy island: 6 480 vs 6 481 with removal off),
 and because the bounded marker count makes every other per-tick cost cheaper,
 removal is *faster* overall (windy island 1.08 s vs 6.2 s off).
 
-The self-intersection search is O(n²) per front per tick; it is cheap where fronts
-are many and small (the presets) and only bites on a single very large ring. It is
-left naive until the 512² profile (§7b) says otherwise; the profile is below.
+The self-intersection search is O(n²) per front per tick. It is still naive; the
+512² profile (§7b) puts it at about a quarter of the fire model once the
+retirement leak is fixed, so bucketing it is the next saving to take.
 
 ### D8 — Burnable enclaves are declared out of scope for this phase
 
@@ -606,6 +606,14 @@ with run length as enclosed rings accumulate, **not** the difference between
 bounded and runaway. The `retire: false` option that produced the baseline stays
 as a measurement hatch.
 
+**Corrected after review — this rule leaked, and the leak was most of the cost.**
+"Every marker against a permanent wall" is not reached by a front buried in its
+*own* burnt ground, whose markers keep creeping across their own cells; at 512²
+four fifths of the live fronts were in that state (§7b). Retirement now also
+fires when no marker has an unburned burnable cell within two cells, which is
+byte-identical in output and takes the same 64² hour to **53 live fronts / 1 703
+markers against 176 / 6 054** with retirement off — a 3×, not a 13 %, saving.
+
 **Stage 3 — crossover/loop removal (D7).** ✅ Split-and-keep-largest, the
 mechanism and its reversal of the D7 table are in **§D7 (shipped)** above.
 *Gate met:* `decrossRing` unit tests in `tests/perimeter.test.ts` (a bow-tie and a
@@ -616,10 +624,11 @@ fold holds under 3 000 markers instead of running away, burned area matches a
 `decross: false` run to within a cell, and the `timber-crown-run` hour now also
 asserts **zero self-crossings** across the whole run (the island gate checks
 simplicity every tick). Determinism (spotting on) still byte-identical. Full suite
-454. **The 512² profile is §7b below**; the crossover search stays naive because it
-is *not* the cost driver — the single-ring case is 1.75 ms/step at one hour, and
-what busts the budget at 512² is the marker count of the many fronts a spotting
-fire carries, not O(n²) on one ring (so bucketing would not save it).
+454. **The 512² profile is §7b below.** The crossover search was left naive on the
+reading that the many-front marker count, not O(n²), was the cost; the review in
+§7b found that marker count was mostly a retirement leak, and with it fixed the
+crossover search is about a quarter of the fire model — bucketing it is now the
+obvious next saving, not yet done.
 
 **Carry forward that held:** grid-welding leaves two merged fronts as two
 overlapping polygons, *not* one self-crossing perimeter, and crossover removal
@@ -721,41 +730,63 @@ ms/step over the run, the fire is still small at 1 200 steps, and the O(n²)
 crossover search and the marker count both grow with the fire, so the cheap early
 ticks hid the expensive late ones. Measured properly (`fire:*` ms/step):
 
-| run (512²) | huygens | raster |
+| run (512²) | huygens, as first shipped | huygens, **after the retirement fix** | raster |
+|---|---|---|---|
+| 1 200 steps, spotting on | 5.41 | — | 1.13 |
+| **3 600 steps (1 h), spotting on** | **41.97** | **9.48** | 1.16 |
+| 3 600 steps, spotting **off** (single ring) | 1.75 | — | — |
+
+| run (the preset's own 256², its own ignitions) | huygens, as first shipped | after the fix |
 |---|---|---|
-| 1 200 steps, spotting on | 5.41 | 1.13 |
-| **3 600 steps (1 h), spotting on** | **41.97** | 1.16 |
-| 3 600 steps, spotting **off** (single ring) | 1.75 | — |
+| 3 600 steps (1 h), spotting on | 34.2 † | **6.93** |
 
-At `timeScale 60`, 1.0 step/frame, the whole `step` owes the 16.67 ms frame. So
-the marker front is **comfortably within budget on a small or early fire, and far
-over it on a full-hour spotting fire at 512²**: `fire:huygens` averages 41.97 ms
-over the hour (sim TOTAL 43.7, i.e. **~27 ms past a bare frame with nothing left
-to render**), and the late-window average (ticks 1 201–3 600, by the deterministic
-subtraction `(3600·41.97 − 1200·5.41)/2400`) is **~60 ms/step**. The **single ring**
-(spotting off) stays cheap — 1.75 ms at one hour — so the cost is not the O(n²)
-crossover on one giant perimeter (that ring reaches only ~500 markers, `sumN²`
-~3 M); it is the **many concurrent fronts** a spotting fire carries at 512², whose
-count explodes over the hour — 429 → 6 051 live fronts and 17 k → 109 k total
-markers between ticks 1 200 and 2 400, spotting seeding new fronts on the growing
-edge faster than retirement culls them. The per-marker Rothermel/Richards work,
-done every substep, is the bill, and it is O(total markers), which bucketing the
-crossover search cannot touch. Raster is ~1.1 ms in every column.
+† From the review harness (`W:\temp\claude\phase11-review\hash.ts`, same orders
+as the profiler), not the profiler itself; the "after" column is the profiler.
 
-**Where Huygens does fit: 256² and below.** The Stage-0/1 numbers were taken at
-256² (`fire:huygens` ~0.56 ms/step), and that is the size the shipped presets and
-the browser default run at. The 512² full-hour spotting fire is the case it misses.
+**What the first column was really measuring: a retirement leak, not the fire.**
+The first cut of this section read the 42 ms as the honest cost of the many
+concurrent fronts a spotting fire carries — 429 → 6 051 live fronts and 17 k →
+109 k markers between ticks 1 200 and 2 400 — and called it a hard reason to keep
+the raster. A review probe then asked of each live front whether *anything
+burnable* was left near it: at tick 2 400, **4 945 of the 6 051 fronts (91 k of
+the 109 k markers) had no unburned cell within a cell of any marker.** They were
+buried inside the burn and still being advanced, because retirement (§D6) only
+fired when *every* marker was against a permanent wall, and a marker creeping over
+its own burnt cells is not against one — a backing marker at a few thousandths of
+a cell per second creeps for many minutes before it is. The fix (commit `cc75bb8`)
+also retires a front once no marker has an unburned burnable cell within **two**
+cells. One cell was not enough, measured: three fronts on a 64² hour looked dead
+and later crossed a cell of their own burnt ground to light 27 more. At two cells
+the `fire`/`intensity`/`crown` layers are **byte-identical** to the model without
+the test (64² and two 256² hours; `tests/huygens.test.ts` "retirement never
+changes what burns", which fails at a one-cell reach). Burned area at 512² is the
+same 34 329 cells either way.
 
-**The default call: keep `'raster'`, and now with a hard reason, not only a soft
-one.** Recommended, and left to the user as a scope decision (§5d). The soft
-reasons stand — every number in [`docs/science.md`](../science.md) is on the raster
-path (flipping triggers the §8 revalidation), and Huygens carries the §D8 hole
-caveat — but the measurement adds a hard one: **the marker front does not hold
-60 fps at 512² over a full spotting hour**, while the raster does with 14 ms to
-spare. The value Phase 11 delivers is that the smooth front is *available* behind
-`spreadEngine: 'huygens'` where its faithfulness of shape is worth the cost and the
-map is not enormous — not that it is the default. Flipping remains a one-line
-change plus the §8 recomputation.
+**Where the time goes now** (CPU profile of the 512² hour): the per-marker
+Rothermel/Richards velocity work is still the largest share, and the O(n²)
+self-crossing search is a close second — roughly a quarter of `fire:huygens`. So
+the earlier statement that the crossing search "is not the cost driver, so
+bucketing would not help" is **withdrawn**: with the buried fronts gone it is one of
+the two main costs, and bucketing its pair search by cell is the obvious next
+saving (not done).
+
+**Budget, honestly.** At `timeScale 60` (1 step/frame) the whole `step` owes the
+16.67 ms frame. At 512² the sim now totals 11.5 ms, leaving 5.1 ms to render in —
+which the data views fit and the terrain view (7.2 ms with smoke) still misses by
+about 2 ms. At the preset's own 256² the sim totals 7.5 ms against the raster's
+2.3 ms (`fire:rothermel` 1.72 vs `fire:huygens` 6.93). So the marker front is **usable at both sizes**, and **close to, but not
+inside, 60 fps at 512² on the terrain view** — no longer the 27 ms-over-a-bare-frame
+it was reported as. (The Stage-0/1 figure of ~0.56 ms/step at 256² is a *short
+`shifting-winds`* run and says nothing about a full spotting hour; do not quote it
+for that.)
+
+**The default call: keep `'raster'`, recommended — but the "hard reason" given
+here before is gone.** It was the leak. What remains are the soft reasons: every
+number in [`docs/science.md`](../science.md) is on the raster path (flipping
+triggers the §8 revalidation), Huygens carries the §D8 hole caveat, and its fire
+model still costs about 4× the raster's at 256² and 8× at 512². Whether that price is worth the smoother front is a
+scope decision, left to the user (§5d). Flipping remains a one-line change plus the
+§8 recomputation.
 
 (Burned area differs between engines — e.g. 34 329 vs the raster's ~14 k at one
 hour, 512² — because the smooth front burns more, §9, and the two throw embers on
@@ -808,7 +839,9 @@ path, and D8's burnable-enclave gap opens in its place.
    `timber-crown-run` hour pinned on the Huygens path. (Barrier guard and
    external-ignition seeding landed in Stage 1.)
 8. Stage 3 ✅: crossover removal (`decrossRing` + `decrossFronts`, split-and-keep-
-   largest), the `--engine` profile flag, the 512² profile (§7b, within budget),
-   and the argued default call (keep `'raster'`, §7b). Determinism pinned with
+   largest), the `--engine` profile flag, the 512² profile (§7b: 9.5 ms/step
+   after the retirement fix, near but not inside the 60 fps budget on the
+   terrain view), and the argued default call (keep `'raster'` on soft reasons,
+   §7b). Determinism pinned with
    spotting on.
 9. `docs/science.md` §1c + §9 retarget; update this doc's status; memory note.
