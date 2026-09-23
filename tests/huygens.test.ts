@@ -549,16 +549,58 @@ describe('Huygens marker front — the spotting preset runs a simulated hour (St
     // -at-zero invariant (§5c) is pinned deterministically by the two-front weld
     // test, which has no spotting.
     expect(zeroInt).toBeLessThanOrEqual(5);
-    // Bounded, and non-vacuously so: the measured hour holds ~140 live fronts
-    // (164 with retirement off), so this is comfortably above the real count and
-    // still far below one-front-per-cell — retirement is provably doing work.
-    expect(model.perimeters.length).toBeLessThan(400);
+    // Bounded, and non-vacuously so: the measured hour ends with 29 live fronts
+    // (173 with retirement off), so this is well above the real count and far below
+    // one-front-per-cell. The next test pins what retirement buys exactly.
+    expect(model.perimeters.length).toBeLessThan(100);
     // …and every front is simple at the end of the hour: crossover removal (§D7)
     // left no residual tangle. (The every-tick guarantee is pinned on the island
     // gate above; here the end-state check is the cheap catch-all on a full run,
     // where without removal the detector finds hundreds of crossings.)
     expect(totalSelfX(model)).toBe(0);
   }, 60_000);
+
+  it('retirement never changes what burns — only what it costs', () => {
+    // A front is retired when it has no open move, or when nothing burnable is
+    // left within reach of any of its markers (`HuygensFireModel.hasFrontier`).
+    // Both are meant to be pure cost savings, so the same hour with retirement
+    // switched off must paint `fire`, `intensity` and `crown` **identically, cell
+    // for cell**. The suppression orders are the ones `tools/profile.ts` issues —
+    // they are what make this run sensitive: with a one-cell frontier reach, three
+    // fronts on it looked dead, later reached an unburned cell two cells off, and
+    // retiring them left 27 cells unburned. Two cells is the measured reach.
+    const base = findPreset('timber-crown-run')!;
+    const SZ = 64;
+    const run = (retire: boolean): { l: ReturnType<typeof loadScenario>; model: HuygensFireModel } => {
+      const l = loadScenario({
+        ...base,
+        width: SZ,
+        height: SZ,
+        spreadEngine: 'huygens',
+        ignitions: 'center',
+        fireModel: { ...base.fireModel, retire },
+      });
+      const c = SZ >> 1;
+      if (l.crew) for (let y = c - 40; y < c + 40; y++) l.crew.orderCutLine(c + 24, y);
+      l.engine?.orderDirectAttack(c + 8, c + 30);
+      l.aircraft?.orderRetardantDrop(c + 30, c - 24);
+      l.sim.run(3600, 1);
+      return { l, model: l.systems.find((s) => s.name === 'fire:huygens') as HuygensFireModel };
+    };
+    const on = run(true);
+    const off = run(false);
+    const a = on.l.world.layers;
+    const b = off.l.world.layers;
+    let differ = 0;
+    for (let i = 0; i < a.fire.data.length; i++) {
+      if (a.fire.data[i] !== b.fire.data[i] || a.intensity.data[i] !== b.intensity.data[i] || a.crown.data[i] !== b.crown.data[i]) differ++;
+    }
+    expect(differ).toBe(0);
+    // …and it is doing real work, not passing vacuously: measured 53 live fronts /
+    // 1 703 markers at the end of the hour, against 176 / 6 054 with it off. (With
+    // a one-cell reach this test fails: 443 cells differ.)
+    expect(on.model.perimeters.length * 2).toBeLessThan(off.model.perimeters.length);
+  }, 120_000);
 });
 
 describe('Huygens marker front — a temporarily unburnable cell is not a permanent one', () => {
@@ -765,18 +807,25 @@ describe('Huygens marker front — self-crossings are removed (Stage 3, §D7)', 
       const sOff = new Simulation(off.world, wind > 0 ? [new UniformWeatherProvider(wind, 0), mOff] : [mOff]);
       // Check the decrossed model's simplicity EVERY tick (with the model's own
       // predicate, so the test and the model agree on what a crossing is) — a loop
-      // can form and be gone between coarse samples. The un-removed model tangles
-      // to thousands of markers, so its O(n²) crossing *count* is only taken at the
-      // end, where it just needs to be positive (non-vacuity).
+      // can form and be gone between coarse samples. The un-removed model is checked
+      // *during* the run too, not at the end: under wind the fire burns the whole
+      // map, and once nothing is left to burn every front — tangled or not — is
+      // correctly retired, so an end-of-run check would see no fronts at all.
+      let offTangled = false;
+      let peakOn = 0;
+      let peakOff = 0;
       for (let t = 0; t < 150; t++) {
         sOn.step(1);
         sOff.step(1);
         expect(mOn.perimeters.some((r) => selfIntersects(r))).toBe(false); // ON: simple every tick
+        offTangled ||= mOff.perimeters.some((r) => selfIntersects(r));
+        peakOn = Math.max(peakOn, totalMarkers(mOn));
+        peakOff = Math.max(peakOff, totalMarkers(mOff));
       }
 
       expect(on.world.layers.fire.get(on.ix1 + 2, on.cy)).not.toBe(FireState.Unburned); // lips met
-      expect(totalSelfX(mOff)).toBeGreaterThan(0); // the scenario really tangles without removal…
-      expect(totalMarkers(mOn)).toBeLessThanOrEqual(totalMarkers(mOff)); // markers bounded
+      expect(offTangled).toBe(true); // the scenario really tangles without removal…
+      expect(peakOn).toBeLessThanOrEqual(peakOff); // markers bounded
       expect(Math.abs(burnedCount(on.world) - burnedCount(off.world))).toBeLessThanOrEqual(8); // area unchanged
     }
   }, 30_000);

@@ -152,8 +152,9 @@ export interface HuygensFireModelOptions extends SurfaceBehaviourOptions {
   /** Vertices in a freshly seeded ring. Default 16. */
   seedVertices?: number;
   /**
-   * Retire a front once every marker is against a permanent wall (§D6). Default
-   * true — the cost bound. `false` keeps every ring alive forever; it exists only
+   * Retire a front once every marker is against a permanent wall, or once nothing
+   * burnable is left within reach of any marker (§D6). Default true — the cost
+   * bound, and it changes no output (`tests/huygens.test.ts` pins that). `false` keeps every ring alive forever; it exists only
    * to measure what retirement is worth (a swallowed ring keeps recomputing an
    * outward push) and to pin that it holds the front count down, and is never a
    * mounted configuration.
@@ -173,6 +174,12 @@ export interface HuygensFireModelOptions extends SurfaceBehaviourOptions {
 
 /** Hard ceiling on substeps per tick — a fire model that hangs is worse than one that lags. */
 const MAX_SUBSTEPS = 64;
+
+/**
+ * How far from a marker, in cells (Chebyshev), {@link HuygensFireModel.hasFrontier}
+ * looks for something left to burn before calling a front dead. Measured; see there.
+ */
+const FRONTIER_REACH = 2;
 
 /** Safety ceiling on decross passes per tick (§D7) — the loop converges well under this. */
 const MAX_DECROSS_PASSES = 8;
@@ -301,8 +308,21 @@ export class HuygensFireModel implements IFireModel {
     // cells stay owned, so nothing re-seeds), even though a slow front is meant to
     // survive and resume when conditions turn. Blocking by a *wet* cell likewise
     // does not count against a front (see `advance`): only permanent walls do.
-    if (this.retire && advanced && this.fronts.some((f) => !f.open)) {
-      this.fronts = this.fronts.filter((f) => f.open);
+    //
+    // **And a front with nothing left to burn near it is retired too**, even if a
+    // marker still has an open move. `open` alone leaks: a marker creeping across
+    // its *own* burnt cells is not blocked, and a backing marker at a few
+    // thousandths of a cell per second creeps for many minutes before it meets a
+    // wall — at 512², 4 945 of 6 051 live fronts (91 k of 109 k markers) were
+    // buried in burnt ground like this after 40 minutes. See `hasFrontier` for the
+    // evidence that this retires nothing that would still have lit a cell.
+    if (this.retire && advanced) {
+      const fronts = this.fronts;
+      let keep = 0;
+      for (const f of fronts) {
+        if (f.open && this.hasFrontier(f, width, world.height, fire, fuelL)) fronts[keep++] = f;
+      }
+      fronts.length = keep;
     }
 
     // ── 4. Remove self-crossings (§D7, Stage 3) ──────────────────────────────
@@ -379,6 +399,49 @@ export class HuygensFireModel implements IFireModel {
       }
       this.fronts = next;
     }
+  }
+
+  /**
+   * Whether any marker of `f` has an unburned, burnable cell within
+   * {@link FRONTIER_REACH} cells of it — somewhere the front could still light.
+   *
+   * The paint never ignites a cell that is not `Unburned` (`advance`), so a front
+   * can only add to the burn by reaching an unburned burnable cell, and it gets
+   * there by moving its markers — through its own burnt ground, since another
+   * front's ground blocks them. How far a marker can lag behind the edge of its
+   * own burn has no hard bound (a folded or decrossed front leaves burnt cells
+   * ahead of it), so the reach is **measured, not derived**: with a one-cell reach
+   * three fronts on a 64² `timber-crown-run` hour looked dead and later reached an
+   * unburned cell two cells off, and retiring them cost 27 burned cells; with two
+   * cells the `fire`/`intensity`/`crown` layers are byte-identical to never
+   * applying this test, on that run and on two 256² hours. `tests/huygens.test.ts`
+   * ("retirement never changes what burns") pins the 64² case against running
+   * with no retirement at all, and fails at a one-cell reach.
+   *
+   * The test reads **fire state and fuel, not ownership and not moisture** on
+   * purpose. A wet or retardant-pinned cell is unburned burnable fuel, so a front
+   * held at a wet band keeps its frontier and crosses once the band dries (the
+   * drydown gate); and ownership is claimed on cells the paint touches but does
+   * not light, so "no unowned neighbour" would retire exactly that front.
+   */
+  private hasFrontier(f: Front, width: number, height: number, fire: Uint8Array, fuelL: Uint8Array): boolean {
+    const { xs, ys } = f;
+    const behaviour = this.behaviour;
+    for (let k = 0; k < xs.length; k++) {
+      const cx = Math.floor(xs[k]);
+      const cy = Math.floor(ys[k]);
+      const y0 = Math.max(0, cy - FRONTIER_REACH);
+      const y1 = Math.min(height - 1, cy + FRONTIER_REACH);
+      const x0 = Math.max(0, cx - FRONTIER_REACH);
+      const x1 = Math.min(width - 1, cx + FRONTIER_REACH);
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const j = y * width + x;
+          if (fire[j] === FireState.Unburned && behaviour.burnableFuel(fuelL[j])) return true;
+        }
+      }
+    }
+    return false;
   }
 
   /**
