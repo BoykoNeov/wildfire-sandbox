@@ -91,8 +91,8 @@ export interface Scenario {
    *    was taken on this path, so it stays the default until Stage 3 argues
    *    otherwise — the same escape-hatch discipline as `spreadTemplate: 'ring8'`.
    *  - `'huygens'`: {@link HuygensFireModel}, marker points on the perimeter.
-   *    Smoother and sub-cell-accurate; still missing perimeter merging and
-   *    crossover removal (Stages 2 and 3).
+   *    Smoother and sub-cell-accurate, with merging and crossover removal
+   *    (Stages 2–3); costs ~4× the raster's fire model at 256² (plan §7b).
    *
    * The raster-only knobs (`spreadShape`, `spreadTemplate`) are ignored under
    * `'huygens'`, and the marker-only ones (`markerSpacing`, `maxAdvance`,
